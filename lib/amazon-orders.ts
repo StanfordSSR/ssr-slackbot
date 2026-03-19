@@ -69,7 +69,7 @@ export async function syncAmazonAccountLinkForDays(link: AmazonAccountLink, days
     const accessToken = await getAuthorizedAmazonAccessToken(link);
     const messageIds = await searchGmailMessageIds(
       accessToken,
-      `is:unread newer_than:${days}d from:amazon.com subject:ordered -subject:shipped -subject:delivered`,
+      `newer_than:${days}d from:amazon.com subject:ordered -subject:shipped -subject:delivered`,
       100,
     );
     let posted = 0;
