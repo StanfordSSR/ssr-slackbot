@@ -159,7 +159,9 @@ async function handleScanEmailCommand(params: { text: string; slackUserId: strin
       );
 
       await postSlackResponse(params.responseUrl, {
-        delete_original: true,
+        replace_original: true,
+        text: " ",
+        blocks: [],
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -262,7 +264,11 @@ async function handleAmazonSyncCommand(params: { text: string; slackUserId: stri
   after(async () => {
     try {
       await syncActiveAmazonAccountForDays(days);
-      await postSlackResponse(params.responseUrl, { delete_original: true });
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: " ",
+        blocks: [],
+      });
     } catch (error) {
       await postDelayedSlackResponse(params.responseUrl, `Amazon sync failed: ${error instanceof Error ? error.message : String(error)}`);
     }
