@@ -44,6 +44,12 @@ async function slackFormFetch<T>(path: string, body: URLSearchParams) {
   return json;
 }
 
+type PostMessageResponse = {
+  ok: true;
+  channel: string;
+  ts: string;
+};
+
 export async function postMessage(channel: string, text: string, blocks?: unknown[], threadTs?: string) {
   return slackFetch<PostMessageResponse>("/chat.postMessage", {
     method: "POST",
