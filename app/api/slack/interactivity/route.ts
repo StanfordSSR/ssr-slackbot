@@ -207,7 +207,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
     });
   }
 
-  if (action.action_id === "claim_amazon_order") {
+  if (action.action_id.startsWith("claim_amazon_order")) {
     const decoded = decodeAmazonClaimValue(actionValue);
 
     const identity = await getSlackUserIdentity(payload.user.id);

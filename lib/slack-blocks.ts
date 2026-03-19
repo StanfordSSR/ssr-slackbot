@@ -174,7 +174,7 @@ export function amazonClaimBlocks(params: {
       elements: teams.map((team) => ({
         type: "button",
         text: { type: "plain_text", text: team.name },
-        action_id: "claim_amazon_order",
+        action_id: `claim_amazon_order_${team.id.slice(0, 16)}`,
         value: encodeAmazonClaimValue(params.ingestionId, team.id),
       })),
     })),
