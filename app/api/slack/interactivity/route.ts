@@ -5,7 +5,7 @@ import { getEnv } from "@/lib/env";
 import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
 import { recordAuditEvent } from "@/lib/audit";
 import { decodeActionValue, decodeAttachmentSelectValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
-import { receiptReviewBlocks } from "@/lib/slack-blocks";
+import { receiptDecisionBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
   approveEmailReceiptIngestion,
@@ -67,8 +67,15 @@ export async function POST(request: Request) {
   }
 
   if (action.action_id === "cancel_receipt") {
-    if (channel) await postDm(channel, "Canceled. Send another receipt any time.");
-    return NextResponse.json({ text: "Receipt canceled.", replace_original: false });
+    return NextResponse.json({
+      text: "Canceled.",
+      replace_original: true,
+      blocks: receiptDecisionBlocks({
+        status: "canceled",
+        title: "Receipt Review",
+        detail: "Canceled",
+      }),
+    });
   }
 
   if (action.action_id === "choose_team") {
@@ -186,7 +193,15 @@ export async function POST(request: Request) {
 Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
     );
 
-    return NextResponse.json({ text: "Receipt logged.", replace_original: false });
+    return NextResponse.json({
+      text: "Confirmed.",
+      replace_original: true,
+      blocks: receiptDecisionBlocks({
+        status: "confirmed",
+        title: "Receipt Review",
+        detail: `Logged for ${decoded.teamName}.`,
+      }),
+    });
   }
 
   if (action.action_id === "confirm_email_receipt" || action.action_id === "reject_email_receipt") {
@@ -226,8 +241,15 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
         return NextResponse.json({ text: "Already processed.", replace_original: false });
       }
 
-      await postDm(channel, "Rejected that emailed receipt. It will not be logged.");
-      return NextResponse.json({ text: "Receipt rejected.", replace_original: false });
+      return NextResponse.json({
+        text: "Rejected.",
+        replace_original: true,
+        blocks: receiptDecisionBlocks({
+          status: "rejected",
+          title: "Automated Receipt Review",
+          detail: "Rejected",
+        }),
+      });
     }
 
     const responseUrl = payload.response_url;
@@ -376,9 +398,13 @@ Amount: ${finalIngestion.extraction.amount_total ?? "unknown"}`,
         );
 
         await postSlackResponse(responseUrl, {
-          text: `Logged ${finalIngestion.artifact_filename}.`,
-          replace_original: false,
-          response_type: "ephemeral",
+          text: "Confirmed.",
+          replace_original: true,
+          blocks: receiptDecisionBlocks({
+            status: "confirmed",
+            title: "Automated Receipt Review",
+            detail: `Logged ${finalIngestion.artifact_filename}.`,
+          }),
         });
       } catch (error) {
         await postSlackResponse(responseUrl, {

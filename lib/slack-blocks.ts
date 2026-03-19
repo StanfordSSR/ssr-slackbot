@@ -119,6 +119,25 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
 
   return blocks;
 }
+
+export function receiptDecisionBlocks(params: {
+  status: "confirmed" | "rejected" | "canceled";
+  title: string;
+  detail?: string;
+}) {
+  const label =
+    params.status === "confirmed" ? "Confirmed" : params.status === "rejected" ? "Rejected" : "Canceled";
+
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${params.title}*\n${label}${params.detail ? `\n${params.detail}` : ""}`,
+      },
+    },
+  ];
+}
 export function teamChoiceBlocks(params: {
   teams: LeadTeam[];
   extraction: ReceiptExtraction;
