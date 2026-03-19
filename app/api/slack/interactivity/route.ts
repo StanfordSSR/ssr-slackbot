@@ -211,60 +211,141 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
       return NextResponse.json({ text: "Receipt rejected.", replace_original: false });
     }
 
-    await recordEmailReceiptApproval({
-      ingestionId: decoded.ingestionId,
-      leadProfileId: profile.id,
-      slackUserId: payload.user.id,
-      decision: "approved",
-    });
-
-    const approved = await approveEmailReceiptIngestion({
-      ingestionId: decoded.ingestionId,
-      approverProfileId: profile.id,
-    });
-
-    if (!approved) {
-      await postDm(channel, "That email receipt was already handled.");
-      return NextResponse.json({ text: "Already processed.", replace_original: false });
+    const responseUrl = payload.response_url;
+    if (!responseUrl) {
+      return NextResponse.json({ text: "Slack did not include a response URL for this action.", replace_original: false });
     }
 
-    const team = await getTeamById(approved.team_id);
-    const current = await getEmailReceiptIngestionById(decoded.ingestionId);
-    if (!current || !team) {
-      throw new Error(`Email ingestion ${decoded.ingestionId} was not found after approval.`);
-    }
+    after(async () => {
+      try {
+        const current = await getEmailReceiptIngestionById(decoded.ingestionId);
+        if (!current) {
+          await postSlackResponse(responseUrl, {
+            text: "That email receipt was not found.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
-    const gmailPayload: GmailPendingReceiptPayload = {
-      source: "gmail",
-      ingestionId: current.id,
-      teamId: current.team_id,
-      teamName: team.name,
-      filename: current.artifact_filename,
-      mimeType: current.artifact_mime_type,
-      artifactSource: current.artifact_source,
-      senderEmail: current.sender_email,
-      subject: current.subject,
-      extraction: current.extraction,
-    };
+        let finalIngestion = current;
 
-    await createPurchaseLog({
-      payload: gmailPayload,
-      profileId: profile.id,
-      personName: profile.full_name || identity.realName || identity.displayName,
-      receipt: {
-        receipt_path: current.artifact_storage_path,
-        receipt_file_name: current.artifact_filename,
-        receipt_uploaded_at: current.received_at || new Date().toISOString(),
-      },
+        if (decoded.selectedAttachmentPartId) {
+          const link = await getGmailAccountLinkById(current.gmail_link_id);
+          if (!link) {
+            await postSlackResponse(responseUrl, {
+              text: "That Gmail link is no longer active.",
+              replace_original: false,
+              response_type: "ephemeral",
+            });
+            return;
+          }
+
+          const rebuilt = await rebuildEmailIngestionAttachment({
+            link,
+            teamId: current.team_id,
+            messageId: current.gmail_message_id,
+            attachmentPartId: decoded.selectedAttachmentPartId,
+          });
+
+          if (rebuilt.extraction.confidence < 0.5) {
+            await postSlackResponse(responseUrl, {
+              text: `Selected file *${rebuilt.artifactFilename}* is under 50% confidence, so it was not logged.`,
+              replace_original: false,
+              response_type: "ephemeral",
+            });
+            return;
+          }
+
+          await updateEmailReceiptIngestionDraft({
+            ingestionId: current.id,
+            artifactSource: rebuilt.artifactSource,
+            artifactFilename: rebuilt.artifactFilename,
+            artifactMimeType: rebuilt.artifactMimeType,
+            artifactStoragePath: rebuilt.artifactStoragePath,
+            extraction: rebuilt.extraction,
+          });
+
+          const refreshed = await getEmailReceiptIngestionById(decoded.ingestionId);
+          if (!refreshed) {
+            throw new Error(`Email ingestion ${decoded.ingestionId} disappeared before approval.`);
+          }
+          finalIngestion = refreshed;
+        }
+
+        await recordEmailReceiptApproval({
+          ingestionId: decoded.ingestionId,
+          leadProfileId: profile.id,
+          slackUserId: payload.user.id,
+          decision: "approved",
+        });
+
+        const approved = await approveEmailReceiptIngestion({
+          ingestionId: decoded.ingestionId,
+          approverProfileId: profile.id,
+        });
+
+        if (!approved) {
+          await postSlackResponse(responseUrl, {
+            text: "That email receipt was already handled.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
+
+        const team = await getTeamById(approved.team_id);
+        if (!team) {
+          throw new Error(`Team ${approved.team_id} was not found after approval.`);
+        }
+
+        const gmailPayload: GmailPendingReceiptPayload = {
+          source: "gmail",
+          ingestionId: finalIngestion.id,
+          teamId: finalIngestion.team_id,
+          teamName: team.name,
+          filename: finalIngestion.artifact_filename,
+          mimeType: finalIngestion.artifact_mime_type,
+          artifactSource: finalIngestion.artifact_source,
+          senderEmail: finalIngestion.sender_email,
+          subject: finalIngestion.subject,
+          extraction: finalIngestion.extraction,
+          selectedAttachmentPartId: decoded.selectedAttachmentPartId ?? null,
+          attachmentOptions: decoded.attachmentOptions,
+        };
+
+        await createPurchaseLog({
+          payload: gmailPayload,
+          profileId: profile.id,
+          personName: profile.full_name || identity.realName || identity.displayName,
+          receipt: {
+            receipt_path: finalIngestion.artifact_storage_path,
+            receipt_file_name: finalIngestion.artifact_filename,
+            receipt_uploaded_at: finalIngestion.received_at || new Date().toISOString(),
+          },
+        });
+
+        await postDm(
+          channel,
+          `Logged *${finalIngestion.extraction.item_name || finalIngestion.extraction.merchant || "receipt purchase"}* for *${team.name}* from *${finalIngestion.artifact_filename}*.
+Amount: ${finalIngestion.extraction.amount_total ?? "unknown"}`,
+        );
+
+        await postSlackResponse(responseUrl, {
+          text: `Logged ${finalIngestion.artifact_filename}.`,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      } catch (error) {
+        await postSlackResponse(responseUrl, {
+          text: `Receipt logging failed: ${error instanceof Error ? error.message : String(error)}`,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      }
     });
 
-    await postDm(
-      channel,
-      `Logged *${current.extraction.item_name || current.extraction.merchant || "receipt purchase"}* for *${team.name}*.
-Amount: ${current.extraction.amount_total ?? "unknown"}`,
-    );
-
-    return NextResponse.json({ text: "Receipt logged.", replace_original: false });
+    return NextResponse.json({ text: "Logging selected receipt...", replace_original: false });
   }
 
   if (action.action_id === "select_email_attachment") {
