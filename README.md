@@ -50,6 +50,8 @@ on public.teams (is_active);
 ## Slack app scopes
 
 Use these bot scopes:
+- `app_mentions:read`
+- `channels:history`
 - `chat:write`
 - `files:read`
 - `im:history`
@@ -61,6 +63,7 @@ Use these bot scopes:
 - Events request URL: `https://YOUR_DOMAIN/api/slack/events`
 - Interactivity request URL: `https://YOUR_DOMAIN/api/slack/interactivity`
 - Subscribe to bot event: `message.im`
+- Subscribe to bot event: `app_mention`
 
 `/api/slack/commands` is still present, but only replies with a short note that the bot is email-based now.
 
@@ -77,8 +80,10 @@ Copy `.env.example` into `.env.local` for local testing or set the same values i
 
 ### Optional
 - `OPENAI_RECEIPT_MODEL` default: `gpt-4.1-mini`
-- `SUPABASE_RECEIPT_BUCKET` to upload the original receipt file
 - `SUPABASE_RECEIPT_PATH_PREFIX` default: `slack-bot`
+
+### Required for production receipt uploads
+- `SUPABASE_RECEIPT_BUCKET` should point to your receipt storage bucket, for example `purchase-receipts`
 
 ## Local development
 
@@ -103,5 +108,5 @@ Expose the app with a public tunnel during local Slack testing.
 
 - The bot assumes the receipt submitter is the person authorized to log for the team.
 - If a user leads multiple teams, the bot prompts them to choose.
-- If `SUPABASE_RECEIPT_BUCKET` is not set, the bot still logs the purchase but leaves the storage fields empty.
+- `SUPABASE_RECEIPT_BUCKET` should be set in production so confirmed receipts are uploaded before the purchase log is created.
 - All Supabase access uses the service role key and must stay server-side only.

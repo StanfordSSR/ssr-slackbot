@@ -49,11 +49,7 @@ export async function uploadReceiptToStorage(params: {
 }) {
   const bucket = getEnv("SUPABASE_RECEIPT_BUCKET");
   if (!bucket) {
-    return {
-      receipt_path: null as string | null,
-      receipt_file_name: null as string | null,
-      receipt_uploaded_at: null as string | null,
-    };
+    throw new Error("Missing required environment variable: SUPABASE_RECEIPT_BUCKET");
   }
 
   const extension = extensionFromFilename(params.filename, params.mimeType);
@@ -61,12 +57,24 @@ export async function uploadReceiptToStorage(params: {
   const safeBaseName = sanitizeStorageFileName(params.filename.replace(/\.[^.]+$/, ""));
   const path = `${prefix}/${params.teamId}/${params.purchaseId}-${safeBaseName}.${extension}`;
 
+  console.info("Uploading receipt to Supabase Storage", {
+    bucket,
+    path,
+    mimeType: params.mimeType,
+    filename: params.filename,
+  });
+
   const { error } = await supabase.storage.from(bucket).upload(path, params.fileBytes, {
     contentType: params.mimeType,
     upsert: true,
   });
 
   if (error) throw error;
+
+  console.info("Uploaded receipt to Supabase Storage", {
+    bucket,
+    path,
+  });
 
   return {
     receipt_path: path,
@@ -104,8 +112,8 @@ export async function createPurchaseLog(params: {
     description,
     purchased_at: purchasedAt,
     person_name: params.personName,
-    payment_method: "credit_card",
-    category: null,
+    payment_method: params.payload.extraction.payment_method,
+    category: params.payload.extraction.category,
     receipt_path: params.receipt.receipt_path,
     receipt_file_name: params.receipt.receipt_file_name,
     receipt_uploaded_at: params.receipt.receipt_uploaded_at,
@@ -147,5 +155,7 @@ function currentAcademicYear() {
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
-  return month >= 9 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
+  const startYear = month >= 9 ? year : year - 1;
+  const endYearShort = String((startYear + 1) % 100).padStart(2, "0");
+  return `${startYear}-${endYearShort}`;
 }
