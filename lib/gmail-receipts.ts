@@ -270,6 +270,10 @@ async function ingestGmailMessage(params: { link: GmailAccountLink; accessToken:
     }
 
     const refs: Array<{ slack_user_id: string; channel: string; ts: string }> = [];
+    const attachmentOptions = listSupportedReceiptAttachments(message).map((attachment) => ({
+      partId: attachment.partId,
+      filename: attachment.filename,
+    }));
     const payload: GmailPendingReceiptPayload = {
       source: "gmail",
       ingestionId: ingestion.id,
@@ -281,6 +285,8 @@ async function ingestGmailMessage(params: { link: GmailAccountLink; accessToken:
       senderEmail: metadata.senderEmail,
       subject: metadata.subject,
       extraction,
+      selectedAttachmentPartId: artifact.part.partId || null,
+      attachmentOptions,
     };
 
     for (const recipient of recipients) {

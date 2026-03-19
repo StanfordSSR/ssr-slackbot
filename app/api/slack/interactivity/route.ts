@@ -4,7 +4,7 @@ import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
 import { decodeActionValue, isGmailAttachmentChoicePayload, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
-import { gmailAttachmentChoiceBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
+import { receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
   approveEmailReceiptIngestion,
@@ -34,7 +34,7 @@ export const dynamic = "force-dynamic";
 type ActionPayload = {
   user: { id: string };
   channel?: { id: string };
-  actions?: Array<{ action_id: string; value?: string }>;
+  actions?: Array<{ action_id: string; value?: string; selected_option?: { value?: string } }>;
 };
 
 export async function POST(request: Request) {
@@ -56,7 +56,9 @@ export async function POST(request: Request) {
   const action = payload.actions?.[0];
   const channel = payload.channel?.id;
 
-  if (!action || !action.value) {
+  const actionValue = action?.selected_option?.value || action?.value;
+
+  if (!action || !actionValue) {
     return NextResponse.json({ ok: true });
   }
 
@@ -67,7 +69,7 @@ export async function POST(request: Request) {
 
   if (action.action_id === "choose_team") {
     if (!channel) return NextResponse.json({ ok: true });
-    const decoded = decodeActionValue(action.value);
+    const decoded = decodeActionValue(actionValue);
     if (decoded.source !== "slack") {
       return NextResponse.json({ text: "That receipt payload was invalid.", replace_original: false });
     }
@@ -80,7 +82,7 @@ export async function POST(request: Request) {
   }
 
   if (action.action_id === "choose_gmail_link_team") {
-    const decoded = JSON.parse(Buffer.from(action.value, "base64url").toString("utf8")) as {
+    const decoded = JSON.parse(Buffer.from(actionValue, "base64url").toString("utf8")) as {
       teamId: string;
       teamName: string;
       gmailEmail: string;
@@ -108,7 +110,7 @@ export async function POST(request: Request) {
 
   if (action.action_id === "confirm_receipt") {
     if (!channel) return NextResponse.json({ ok: true });
-    const decoded = decodeActionValue(action.value);
+    const decoded = decodeActionValue(actionValue);
     if (decoded.source !== "slack") {
       return NextResponse.json({ text: "That receipt payload was invalid.", replace_original: false });
     }
@@ -168,7 +170,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
 
   if (action.action_id === "confirm_email_receipt" || action.action_id === "reject_email_receipt") {
     if (!channel) return NextResponse.json({ ok: true });
-    const decoded = decodeActionValue(action.value);
+    const decoded = decodeActionValue(actionValue);
     if (!isGmailPendingReceiptPayload(decoded)) {
       return NextResponse.json({ text: "That Gmail receipt payload was invalid.", replace_original: false });
     }
@@ -205,34 +207,6 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
 
       await postDm(channel, "Rejected that emailed receipt. It will not be logged.");
       return NextResponse.json({ text: "Receipt rejected.", replace_original: false });
-    }
-
-    const currentIngestion = await getEmailReceiptIngestionById(decoded.ingestionId);
-    if (!currentIngestion) {
-      return NextResponse.json({ text: "That email receipt was not found.", replace_original: false });
-    }
-
-    const link = await getGmailAccountLinkById(currentIngestion.gmail_link_id);
-    if (!link) {
-      return NextResponse.json({ text: "That Gmail link is no longer active.", replace_original: false });
-    }
-
-    const { attachments } = await getSupportedEmailAttachments(link, currentIngestion.gmail_message_id);
-    if (attachments.length > 1) {
-      await postDm(
-        channel,
-        `This email has multiple receipt files for *${decoded.teamName}*. Pick the right one to finish logging.`,
-        gmailAttachmentChoiceBlocks({
-          teamName: decoded.teamName,
-          ingestionId: decoded.ingestionId,
-          teamId: decoded.teamId,
-          attachments: attachments.map((attachment: { partId: string; filename: string }) => ({
-            partId: attachment.partId,
-            filename: attachment.filename,
-          })),
-        }),
-      );
-      return NextResponse.json({ text: "Choose an attachment to continue.", replace_original: false });
     }
 
     await recordEmailReceiptApproval({
@@ -291,9 +265,9 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
     return NextResponse.json({ text: "Receipt logged.", replace_original: false });
   }
 
-  if (action.action_id === "choose_email_attachment") {
+  if (action.action_id === "select_email_attachment") {
     if (!channel) return NextResponse.json({ ok: true });
-    const decoded = decodeActionValue(action.value);
+    const decoded = decodeActionValue(actionValue);
     if (!isGmailAttachmentChoicePayload(decoded)) {
       return NextResponse.json({ text: "That attachment choice was invalid.", replace_original: false });
     }
@@ -322,6 +296,7 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
       return NextResponse.json({ text: "That Gmail link is no longer active.", replace_original: false });
     }
 
+    const { attachments } = await getSupportedEmailAttachments(link, current.gmail_message_id);
     const rebuilt = await rebuildEmailIngestionAttachment({
       link,
       teamId: current.team_id,
@@ -330,8 +305,10 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
     });
 
     if (rebuilt.extraction.confidence < 0.5) {
-      await postDm(channel, `Skipped *${decoded.filename}* because the extracted confidence was under 50%.`);
-      return NextResponse.json({ text: "Attachment confidence too low.", replace_original: false });
+      return NextResponse.json({
+        text: `Skipped *${decoded.filename}* because the extracted confidence was under 50%. Pick another file if you want.`,
+        replace_original: false,
+      });
     }
 
     await updateEmailReceiptIngestionDraft({
@@ -343,60 +320,29 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
       extraction: rebuilt.extraction,
     });
 
-    await recordEmailReceiptApproval({
-      ingestionId: decoded.ingestionId,
-      leadProfileId: profile.id,
-      slackUserId: payload.user.id,
-      decision: "approved",
-    });
-
-    const approved = await approveEmailReceiptIngestion({
-      ingestionId: decoded.ingestionId,
-      approverProfileId: profile.id,
-    });
-
-    if (!approved) {
-      await postDm(channel, "That email receipt was already handled.");
-      return NextResponse.json({ text: "Already processed.", replace_original: false });
-    }
-
-    const team = await getTeamById(approved.team_id);
-    const finalIngestion = await getEmailReceiptIngestionById(decoded.ingestionId);
-    if (!finalIngestion || !team) {
-      throw new Error(`Email ingestion ${decoded.ingestionId} was not found after attachment selection.`);
-    }
-
-    const gmailPayload: GmailPendingReceiptPayload = {
+    const updatedPayload: GmailPendingReceiptPayload = {
       source: "gmail",
-      ingestionId: finalIngestion.id,
-      teamId: finalIngestion.team_id,
-      teamName: team.name,
-      filename: finalIngestion.artifact_filename,
-      mimeType: finalIngestion.artifact_mime_type,
-      artifactSource: finalIngestion.artifact_source,
-      senderEmail: finalIngestion.sender_email,
-      subject: finalIngestion.subject,
-      extraction: finalIngestion.extraction,
+      ingestionId: current.id,
+      teamId: current.team_id,
+      teamName: current.teamName,
+      filename: rebuilt.artifactFilename,
+      mimeType: rebuilt.artifactMimeType,
+      artifactSource: rebuilt.artifactSource,
+      senderEmail: current.sender_email,
+      subject: current.subject,
+      extraction: rebuilt.extraction,
+      selectedAttachmentPartId: decoded.attachmentPartId,
+      attachmentOptions: attachments.map((attachment) => ({
+        partId: attachment.partId,
+        filename: attachment.filename,
+      })),
     };
 
-    await createPurchaseLog({
-      payload: gmailPayload,
-      profileId: profile.id,
-      personName: profile.full_name || identity.realName || identity.displayName,
-      receipt: {
-        receipt_path: finalIngestion.artifact_storage_path,
-        receipt_file_name: finalIngestion.artifact_filename,
-        receipt_uploaded_at: finalIngestion.received_at || new Date().toISOString(),
-      },
+    return NextResponse.json({
+      text: `Updated draft to use ${decoded.filename}.`,
+      replace_original: true,
+      blocks: receiptReviewBlocks({ teamName: current.teamName, payload: updatedPayload }),
     });
-
-    await postDm(
-      channel,
-      `Logged *${finalIngestion.extraction.item_name || finalIngestion.extraction.merchant || "receipt purchase"}* for *${team.name}* from *${finalIngestion.artifact_filename}*.
-Amount: ${finalIngestion.extraction.amount_total ?? "unknown"}`,
-    );
-
-    return NextResponse.json({ text: `Picked ${decoded.filename}.`, replace_original: false });
   }
 
   return NextResponse.json({ ok: true });

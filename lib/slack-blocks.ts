@@ -6,56 +6,136 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
   const receipt = payload.extraction;
   const isGmail = isGmailPendingReceiptPayload(payload);
   const sourceLabel = isGmail ? (payload.artifactSource === "attachment" ? "Email attachment" : "Email PDF") : "Slack upload";
-  const summaryLines = [
-    `*Team:* ${teamName}  |  *Source:* ${sourceLabel}`,
-    `*Merchant:* ${receipt.merchant ?? "Unknown"}  |  *Amount:* ${prettyCurrency(receipt.amount_total, receipt.currency)}`,
-    `*Date:* ${receipt.purchase_date ?? "Unknown"}  |  *Item:* ${receipt.item_name ?? "Unknown"}`,
-    `*Category:* ${receipt.category}  |  *Payment:* ${receipt.payment_method}`,
-    `*Confidence:* ${Math.round(receipt.confidence * 100)}%`,
+  const fields = [
+    { type: "mrkdwn", text: `*Team*\n${teamName}` },
+    { type: "mrkdwn", text: `*Source*\n${sourceLabel}` },
+    { type: "mrkdwn", text: `*Merchant*\n${receipt.merchant ?? "Unknown"}` },
+    { type: "mrkdwn", text: `*Amount*\n${prettyCurrency(receipt.amount_total, receipt.currency)}` },
+    { type: "mrkdwn", text: `*Date*\n${receipt.purchase_date ?? "Unknown"}` },
+    { type: "mrkdwn", text: `*Item*\n${receipt.item_name ?? "Unknown"}` },
+    { type: "mrkdwn", text: `*Category*\n${receipt.category}` },
+    { type: "mrkdwn", text: `*Payment*\n${receipt.payment_method}` },
+    { type: "mrkdwn", text: `*Confidence*\n${Math.round(receipt.confidence * 100)}%` },
+    { type: "mrkdwn", text: `*Receipt file*\n${payload.filename}` },
   ];
 
-  if (isGmail) {
-    summaryLines.push(`*From:* ${payload.senderEmail ?? "Unknown"}`);
-    summaryLines.push(`*Subject:* ${payload.subject ?? "Unknown"}`);
-  }
-
-  summaryLines.push(`*Notes:* ${receipt.notes ?? "None"}`);
-
-  return [
-    {
-      type: "header",
-      text: {
-        type: "plain_text",
-        text: "Receipt draft",
-      },
-    },
+  const blocks: unknown[] = [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: summaryLines.join("\n"),
+        text: "*Automated Receipt Review*",
       },
     },
     {
-      type: "actions",
+      type: "context",
       elements: [
         {
-          type: "button",
-          text: { type: "plain_text", text: "Confirm" },
-          style: "primary",
-          action_id: isGmail ? "confirm_email_receipt" : "confirm_receipt",
-          value: encodeActionValue(payload),
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: isGmail ? "Reject" : "Cancel" },
-          style: isGmail ? undefined : "danger",
-          action_id: isGmail ? "reject_email_receipt" : "cancel_receipt",
-          value: encodeActionValue(payload),
+          type: "mrkdwn",
+          text: isGmail
+            ? "Generated from Gmail intake. Review the extracted details before logging."
+            : "Generated from a Slack upload. Review the extracted details before logging.",
         },
       ],
     },
+    {
+      type: "divider",
+    },
+    {
+      type: "section",
+      fields,
+    },
   ];
+
+  if (isGmail) {
+    blocks.push({
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*From*\n${payload.senderEmail ?? "Unknown"}` },
+        { type: "mrkdwn", text: `*Subject*\n${payload.subject ?? "Unknown"}` },
+      ],
+    });
+  }
+
+  blocks.push({
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: `*Notes*\n${receipt.notes ?? "None"}`,
+    },
+  });
+
+  if (isGmail && payload.attachmentOptions && payload.attachmentOptions.length > 1) {
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "static_select",
+          action_id: "select_email_attachment",
+          placeholder: {
+            type: "plain_text",
+            text: "Choose receipt file",
+          },
+          initial_option: {
+            text: {
+              type: "plain_text",
+              text: findSelectedAttachmentLabel(payload),
+            },
+            value: encodeActionValue({
+              source: "gmail_attachment_choice",
+              ingestionId: payload.ingestionId,
+              teamId: payload.teamId,
+              teamName: payload.teamName,
+              attachmentPartId: payload.selectedAttachmentPartId || payload.attachmentOptions[0].partId,
+              filename: payload.filename,
+            } satisfies GmailAttachmentChoicePayload),
+          },
+          options: payload.attachmentOptions.slice(0, 100).map((attachment) => ({
+            text: {
+              type: "plain_text",
+              text: attachment.filename.slice(0, 75),
+            },
+            value: encodeActionValue({
+              source: "gmail_attachment_choice",
+              ingestionId: payload.ingestionId,
+              teamId: payload.teamId,
+              teamName: payload.teamName,
+              attachmentPartId: attachment.partId,
+              filename: attachment.filename,
+            } satisfies GmailAttachmentChoicePayload),
+          })),
+        },
+      ],
+    });
+  }
+
+  blocks.push({
+    type: "actions",
+    elements: [
+      {
+        type: "button",
+        text: { type: "plain_text", text: "Confirm" },
+        style: "primary",
+        action_id: isGmail ? "confirm_email_receipt" : "confirm_receipt",
+        value: encodeActionValue(payload),
+      },
+      {
+        type: "button",
+        text: { type: "plain_text", text: isGmail ? "Reject" : "Cancel" },
+        style: isGmail ? undefined : "danger",
+        action_id: isGmail ? "reject_email_receipt" : "cancel_receipt",
+        value: encodeActionValue(payload),
+      },
+    ],
+  });
+
+  return blocks;
+}
+
+function findSelectedAttachmentLabel(payload: Extract<PendingReceiptPayload, { source: "gmail" }>) {
+  const selected =
+    payload.attachmentOptions?.find((attachment) => attachment.partId === payload.selectedAttachmentPartId)?.filename || payload.filename;
+  return selected.slice(0, 75);
 }
 
 export function teamChoiceBlocks(params: {

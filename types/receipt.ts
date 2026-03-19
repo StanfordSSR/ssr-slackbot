@@ -52,6 +52,8 @@ export type GmailPendingReceiptPayload = {
   senderEmail: string | null;
   subject: string | null;
   extraction: ReceiptExtraction;
+  selectedAttachmentPartId?: string | null;
+  attachmentOptions?: Array<{ partId: string; filename: string }>;
 };
 
 export type GmailAttachmentChoicePayload = {
