@@ -24,6 +24,14 @@ type SlackEventEnvelope = {
   };
 };
 
+function isProcessableDirectMessageEvent(event: NonNullable<SlackEventEnvelope["event"]>) {
+  if (event.type !== "message") return false;
+  if (event.bot_id) return false;
+  if (event.channel_type !== "im") return false;
+  if (!event.subtype) return true;
+  return event.subtype === "file_share";
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
   const signingSecret = getEnv("SLACK_SIGNING_SECRET")!;
@@ -44,7 +52,17 @@ export async function POST(request: Request) {
   }
 
   const event = body.event;
-  if (event.type !== "message" || event.subtype || event.bot_id || event.channel_type !== "im") {
+  const accepted = isProcessableDirectMessageEvent(event);
+  console.info("Slack event received", {
+    eventType: event.type,
+    subtype: event.subtype ?? null,
+    channelType: event.channel_type ?? null,
+    hasFiles: Boolean(event.files?.length),
+    fileCount: event.files?.length ?? 0,
+    accepted,
+  });
+
+  if (!accepted) {
     return NextResponse.json({ ok: true });
   }
 
@@ -64,6 +82,15 @@ async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]
   const file = event.files?.[0];
 
   if (!userId || !channel) return;
+
+  console.info("Handling Slack DM receipt event", {
+    userId,
+    channel,
+    subtype: event.subtype ?? null,
+    fileId: file?.id ?? null,
+    filename: file?.name ?? null,
+    mimeType: file?.mimetype ?? null,
+  });
 
   if (!file?.id) {
     await postDm(channel, "Send me a receipt image or PDF and I’ll try to log it to your team.");
