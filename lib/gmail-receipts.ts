@@ -63,9 +63,13 @@ export async function syncAllGmailLinks() {
 }
 
 export async function syncGmailLink(link: GmailAccountLink) {
+  return syncGmailLinkForDays(link);
+}
+
+export async function syncGmailLinkForDays(link: GmailAccountLink, daysOverride?: number) {
   await markGmailScanStarted(link.id);
-  const initialBackfill = !link.initial_backfill_completed_at;
-  const days = initialBackfill ? 10 : 3;
+  const initialBackfill = daysOverride == null && !link.initial_backfill_completed_at;
+  const days = daysOverride ?? (initialBackfill ? 10 : 3);
   let accessToken = link.access_token;
 
   try {

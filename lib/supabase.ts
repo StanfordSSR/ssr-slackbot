@@ -273,6 +273,19 @@ export async function getActiveGmailAccountLinks(): Promise<GmailAccountLink[]> 
   return (data ?? []) as GmailAccountLink[];
 }
 
+export async function getActiveGmailAccountLinksForProfile(profileId: string): Promise<GmailAccountLink[]> {
+  const { data, error } = await supabase
+    .from("gmail_account_links")
+    .select(
+      "id, team_id, linked_by_profile_id, gmail_email, google_subject_id, refresh_token_encrypted, access_token, access_token_expires_at, is_active, initial_backfill_completed_at, last_scan_started_at, last_scan_completed_at",
+    )
+    .eq("linked_by_profile_id", profileId)
+    .eq("is_active", true);
+
+  if (error) throw error;
+  return (data ?? []) as GmailAccountLink[];
+}
+
 export async function getGmailAccountLinkById(linkId: string) {
   const { data, error } = await supabase
     .from("gmail_account_links")

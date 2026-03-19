@@ -64,6 +64,26 @@ export async function updateMessage(channel: string, ts: string, text: string, b
   });
 }
 
+export async function postDelayedSlackResponse(responseUrl: string, text: string, blocks?: unknown[]) {
+  const response = await fetch(responseUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({
+      response_type: "ephemeral",
+      replace_original: false,
+      text,
+      blocks,
+    }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Slack response_url request failed: ${response.status}`);
+  }
+}
+
 export async function postDm(channel: string, text: string, blocks?: unknown[]) {
   return postMessage(channel, text, blocks);
 }
