@@ -79,6 +79,7 @@ export async function postSlackResponse(
     text?: string;
     blocks?: unknown[];
     replace_original?: boolean;
+    delete_original?: boolean;
     response_type?: "ephemeral" | "in_channel";
   },
 ) {

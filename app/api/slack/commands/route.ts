@@ -5,7 +5,7 @@ import { getEnv } from "@/lib/env";
 import { after } from "next/server";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
-import { getSlackUserIdentity, postDelayedSlackResponse } from "@/lib/slack";
+import { getSlackUserIdentity, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
 import { findProfileByEmail, getActiveGmailAccountLinksForProfile, getLeadTeamsForUser, getTeamById } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -142,27 +142,16 @@ async function handleScanEmailCommand(params: { text: string; slackUserId: strin
 
   after(async () => {
     try {
-      const results = await Promise.all(
+      await Promise.all(
         links.map(async (link) => {
-          const team = await getTeamById(link.team_id);
-          const result = await syncGmailLinkForDays(link, days);
-          return {
-            teamName: team?.name || "your team",
-            gmailEmail: link.gmail_email,
-            result,
-          };
+          await getTeamById(link.team_id);
+          await syncGmailLinkForDays(link, days);
         }),
       );
 
-      const summaryLines = results.map(
-        ({ teamName, gmailEmail, result }) =>
-          `• ${teamName} (${gmailEmail}): checked ${result.unreadCount} unread email(s), drafted ${result.processed} receipt review message(s).`,
-      );
-
-      await postDelayedSlackResponse(
-        params.responseUrl,
-        `Email scan complete for the last ${days} day(s).\n${summaryLines.join("\n")}`,
-      );
+      await postSlackResponse(params.responseUrl, {
+        delete_original: true,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await postDelayedSlackResponse(
