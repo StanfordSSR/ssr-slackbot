@@ -155,19 +155,33 @@ export function amazonClaimBlocks(params: {
     }));
   const teamRows = chunk(safeTeams, 5);
   const safeItemName = params.itemName.replace(/\s+/g, " ").trim().slice(0, 120) || "Amazon order";
-  const summaryText =
-    `*Amazon Purchase Claim*\n` +
-    `Item: ${safeItemName}\n` +
-    `Total: ${prettyCurrency(params.amountTotal, params.currency)}\n` +
-    `Date: ${params.purchaseDate || "Unknown"}\n` +
-    `Please claim this purchase for the correct team.`;
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: summaryText,
+        text: "*Amazon Purchase Claim*",
       },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "Automated from the linked Amazon inbox. Please claim this purchase for the correct team.",
+        },
+      ],
+    },
+    {
+      type: "divider",
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Item*\n${safeItemName}` },
+        { type: "mrkdwn", text: `*Total*\n${prettyCurrency(params.amountTotal, params.currency)}` },
+        { type: "mrkdwn", text: `*Date*\n${params.purchaseDate || "Unknown"}` },
+      ],
     },
     ...teamRows.map((teams) => ({
       type: "actions",
@@ -189,6 +203,15 @@ export function amazonClaimDecisionBlocks(params: { teamName: string }) {
         type: "mrkdwn",
         text: `*Amazon Purchase Claim*\nClaimed by ${params.teamName}`,
       },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "Claim completed",
+        },
+      ],
     },
   ];
 }
