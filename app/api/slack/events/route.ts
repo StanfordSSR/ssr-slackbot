@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { fetchFileInfo, downloadSlackFile, getSlackUserIdentity, postDm } from "@/lib/slack";
@@ -66,10 +66,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  void handleMessageEvent(event).catch(async (error) => {
-    console.error("Failed to handle Slack event", error);
-    if (event.channel) {
-      await postDm(event.channel, "I hit a snag while reading that receipt. Try again with a clearer image or PDF.");
+  after(async () => {
+    try {
+      await handleMessageEvent(event);
+    } catch (error) {
+      console.error("Failed to handle Slack event", error);
+      if (event.channel) {
+        await postDm(event.channel, "I hit a snag while reading that receipt. Try again with a clearer image or PDF.");
+      }
     }
   });
 
@@ -97,6 +101,7 @@ async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]
     return;
   }
 
+  console.info("Resolving Slack user identity and HQ profile", { userId, channel });
   const identity = await getSlackUserIdentity(userId);
   const profile = await findProfileByEmail(identity.email);
 
