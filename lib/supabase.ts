@@ -344,13 +344,18 @@ export async function disableGmailAccountLink(linkId: string) {
 export async function hasEmailReceiptIngestion(params: { gmailLinkId: string; gmailMessageId: string }) {
   const { data, error } = await supabase
     .from("email_receipt_ingestions")
-    .select("id")
+    .select("id, status")
     .eq("gmail_link_id", params.gmailLinkId)
     .eq("gmail_message_id", params.gmailMessageId)
     .maybeSingle();
 
   if (error) throw error;
-  return Boolean(data);
+  return (data as { id: string; status: EmailReceiptIngestion["status"] } | null) ?? null;
+}
+
+export async function deleteEmailReceiptIngestion(ingestionId: string) {
+  const { error } = await supabase.from("email_receipt_ingestions").delete().eq("id", ingestionId);
+  if (error) throw error;
 }
 
 export async function createEmailReceiptIngestion(params: {

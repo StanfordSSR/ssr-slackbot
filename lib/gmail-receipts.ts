@@ -11,6 +11,7 @@ import {
 import { extractReceiptFromImage } from "@/lib/openai";
 import { decryptSecret, encryptSecret } from "@/lib/secrets";
 import {
+  deleteEmailReceiptIngestion,
   GmailAccountLink,
   createEmailReceiptIngestion,
   disableGmailAccountLink,
@@ -88,8 +89,11 @@ export async function syncGmailLinkForDays(link: GmailAccountLink, daysOverride?
     let processed = 0;
 
     for (const messageId of messageIds) {
-      const alreadyProcessed = await hasEmailReceiptIngestion({ gmailLinkId: link.id, gmailMessageId: messageId });
-      if (alreadyProcessed) continue;
+      const existingIngestion = await hasEmailReceiptIngestion({ gmailLinkId: link.id, gmailMessageId: messageId });
+      if (existingIngestion && existingIngestion.status !== "failed") continue;
+      if (existingIngestion?.status === "failed") {
+        await deleteEmailReceiptIngestion(existingIngestion.id);
+      }
       processed += await ingestGmailMessage({ link, accessToken, messageId });
     }
 
