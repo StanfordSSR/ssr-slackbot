@@ -1,3 +1,5 @@
+import { htmlToPlainText } from "@/lib/email-pdf";
+
 type GmailMessagePartBody = {
   attachmentId?: string;
   data?: string;
@@ -48,13 +50,17 @@ async function gmailFetch<T>(accessToken: string, path: string, init?: RequestIn
   return (await response.json()) as T;
 }
 
-export async function searchUnreadGmailMessageIds(accessToken: string, days: number) {
-  const query = `is:unread has:attachment newer_than:${days}d`;
+export async function searchGmailMessageIds(accessToken: string, query: string, maxResults = 100) {
   const response = await gmailFetch<{ messages?: Array<{ id: string }> }>(
     accessToken,
-    `/users/me/messages?q=${encodeURIComponent(query)}&maxResults=100`,
+    `/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${encodeURIComponent(String(maxResults))}`,
   );
   return (response.messages ?? []).map((message) => message.id);
+}
+
+export async function searchUnreadGmailMessageIds(accessToken: string, days: number) {
+  const query = `is:unread has:attachment newer_than:${days}d`;
+  return searchGmailMessageIds(accessToken, query, 100);
 }
 
 export async function fetchGmailMessage(accessToken: string, messageId: string) {
@@ -120,9 +126,34 @@ export function getMessageMetadata(message: GmailMessage) {
   };
 }
 
+export function getMessageBodyText(message: GmailMessage) {
+  const { html, text } = extractMessageBody(message.payload);
+  return (html ? htmlToPlainText(html) : text || message.snippet || "").trim();
+}
+
 function flattenMessageParts(part?: GmailMessagePart): GmailMessagePart[] {
   if (!part) return [];
   return [part, ...(part.parts ?? []).flatMap((child) => flattenMessageParts(child))];
+}
+
+function extractMessageBody(part?: GmailMessagePart): { html: string | null; text: string | null } {
+  if (!part) return { html: null, text: null };
+
+  let html: string | null = null;
+  let text: string | null = null;
+
+  const visit = (node: GmailMessagePart) => {
+    if (node.mimeType === "text/html" && node.body?.data && !html) {
+      html = Buffer.from(node.body.data, "base64url").toString("utf8");
+    }
+    if (node.mimeType === "text/plain" && node.body?.data && !text) {
+      text = Buffer.from(node.body.data, "base64url").toString("utf8");
+    }
+    for (const child of node.parts ?? []) visit(child);
+  };
+
+  visit(part);
+  return { html, text };
 }
 
 function isSupportedReceiptPart(part: GmailMessagePart) {

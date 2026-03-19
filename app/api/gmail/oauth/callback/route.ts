@@ -1,8 +1,9 @@
 import { after, NextResponse } from "next/server";
-import { exchangeGoogleCodeForTokens, fetchGoogleUserEmail, parseGmailOAuthState } from "@/lib/google-oauth";
+import { exchangeGoogleCodeForTokens, fetchGoogleUserEmail, parseGoogleOAuthState } from "@/lib/google-oauth";
+import { syncActiveAmazonAccount } from "@/lib/amazon-orders";
 import { encryptSecret } from "@/lib/secrets";
 import { postDirectMessageToUser } from "@/lib/slack";
-import { getTeamById, getGmailAccountLinkById, upsertGmailAccountLink } from "@/lib/supabase";
+import { getTeamById, getGmailAccountLinkById, upsertAmazonAccountLink, upsertGmailAccountLink } from "@/lib/supabase";
 import { syncGmailLink } from "@/lib/gmail-receipts";
 
 export const runtime = "nodejs";
@@ -22,7 +23,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "missing_code_or_state" }, { status: 400 });
   }
 
-  const parsed = parseGmailOAuthState(state);
+  const parsed = parseGoogleOAuthState(state);
   const tokens = await exchangeGoogleCodeForTokens(code);
   const googleIdentity = await fetchGoogleUserEmail(tokens.access_token);
   if (googleIdentity.email !== parsed.gmailEmail) {
@@ -30,6 +31,32 @@ export async function GET(request: Request) {
   }
   if (!tokens.refresh_token) {
     return renderHtml("Google did not return a refresh token. Remove the existing app access in Google and try linking again.");
+  }
+
+  if (parsed.kind === "amazon") {
+    await upsertAmazonAccountLink({
+      linkedByProfileId: parsed.profileId,
+      gmailEmail: googleIdentity.email,
+      slackChannelId: parsed.channelId,
+      googleSubjectId: googleIdentity.googleSubjectId,
+      refreshTokenEncrypted: encryptSecret(tokens.refresh_token),
+      accessToken: tokens.access_token,
+      accessTokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000).toISOString(),
+    });
+
+    after(async () => {
+      try {
+        await notifySlackUser(parsed.slackUserId, `Amazon inbox linked successfully for ${googleIdentity.email}.`);
+        await notifySlackUser(parsed.slackUserId, "Scanning unread Amazon order emails now.");
+        const result = await syncActiveAmazonAccount();
+        await notifySlackUser(parsed.slackUserId, `Amazon sync complete. Posted ${result.posted} claim message(s) to Slack.`);
+      } catch (error) {
+        console.error("Failed to run initial Amazon sync after linking", error);
+        await notifySlackUser(parsed.slackUserId, "Amazon inbox linking worked, but the first sync hit a snag.");
+      }
+    });
+
+    return renderHtml(`Amazon inbox linked for ${googleIdentity.email}. You can close this tab.`);
   }
 
   const link = await upsertGmailAccountLink({

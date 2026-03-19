@@ -56,6 +56,15 @@ export function isGmailAttachmentChoicePayload(payload: unknown): payload is Gma
   );
 }
 
+export function isAmazonClaimPayload(payload: unknown): payload is Extract<PendingReceiptPayload, { source: "amazon_order_claim" }> {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      "source" in payload &&
+      (payload as { source?: string }).source === "amazon_order_claim",
+  );
+}
+
 export function encodeAttachmentSelectValue(ingestionId: string, attachmentPartId: string) {
   return `${ingestionId}:${attachmentPartId}`;
 }

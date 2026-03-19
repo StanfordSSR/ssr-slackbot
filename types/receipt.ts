@@ -65,4 +65,26 @@ export type GmailAttachmentChoicePayload = {
   filename: string;
 };
 
-export type PendingReceiptPayload = SlackPendingReceiptPayload | GmailPendingReceiptPayload;
+export type AmazonOrderExtraction = {
+  item_name: string | null;
+  amount_total: number | null;
+  currency: string | null;
+  purchase_date: string | null;
+  confidence: number;
+  notes: string | null;
+};
+
+export type AmazonClaimPayload = {
+  source: "amazon_order_claim";
+  ingestionId: string;
+  teamId: string;
+  teamName: string;
+  itemName: string;
+  amountTotal: number;
+  currency: string | null;
+  purchaseDate: string | null;
+};
+
+export type ReceiptPendingPayload = SlackPendingReceiptPayload | GmailPendingReceiptPayload;
+
+export type PendingReceiptPayload = ReceiptPendingPayload | AmazonClaimPayload;

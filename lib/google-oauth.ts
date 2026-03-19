@@ -1,13 +1,24 @@
 import { getEnv, getGoogleScopes } from "@/lib/env";
 import { signPayload, verifySignedPayload } from "@/lib/secrets";
 
-type GmailOAuthState = {
+type BaseOAuthState = {
   slackUserId: string;
   profileId: string;
-  teamId: string;
   gmailEmail: string;
   issuedAt: number;
 };
+
+type GmailOAuthState = BaseOAuthState & {
+  kind: "gmail";
+  teamId: string;
+};
+
+type AmazonOAuthState = BaseOAuthState & {
+  kind: "amazon";
+  channelId: string;
+};
+
+type GoogleOAuthState = GmailOAuthState | AmazonOAuthState;
 
 type GoogleTokenResponse = {
   access_token: string;
@@ -18,21 +29,43 @@ type GoogleTokenResponse = {
   id_token?: string;
 };
 
-export function createGmailOAuthState(input: Omit<GmailOAuthState, "issuedAt">) {
+function createGoogleOAuthState(input: Omit<GoogleOAuthState, "issuedAt">) {
   const payload = JSON.stringify({ ...input, issuedAt: Date.now() });
   const signature = signPayload(payload);
   return Buffer.from(JSON.stringify({ payload, signature }), "utf8").toString("base64url");
 }
 
-export function parseGmailOAuthState(state: string): GmailOAuthState {
+export function createGmailOAuthState(input: Omit<GmailOAuthState, "issuedAt" | "kind">) {
+  return createGoogleOAuthState({ ...input, kind: "gmail" });
+}
+
+export function createAmazonOAuthState(input: Omit<AmazonOAuthState, "issuedAt">) {
+  return createGoogleOAuthState(input);
+}
+
+export function parseGoogleOAuthState(state: string): GoogleOAuthState {
   const decoded = JSON.parse(Buffer.from(state, "base64url").toString("utf8")) as { payload: string; signature: string };
   if (!verifySignedPayload(decoded.payload, decoded.signature)) {
     throw new Error("Invalid Google OAuth state signature.");
   }
 
-  const payload = JSON.parse(decoded.payload) as GmailOAuthState;
+  const payload = JSON.parse(decoded.payload) as BaseOAuthState & { teamId?: string; channelId?: string; kind?: string };
   if (Date.now() - payload.issuedAt > 1000 * 60 * 30) {
     throw new Error("Google OAuth state expired.");
+  }
+  if (payload.kind === "amazon" && payload.channelId) {
+    return payload as GoogleOAuthState;
+  }
+  if ((payload.kind === "gmail" || !payload.kind) && payload.teamId) {
+    return { ...payload, kind: "gmail" } as GoogleOAuthState;
+  }
+  throw new Error("Invalid Google OAuth state payload.");
+}
+
+export function parseGmailOAuthState(state: string): GmailOAuthState {
+  const payload = parseGoogleOAuthState(state);
+  if (payload.kind !== "gmail") {
+    throw new Error("Google OAuth state was not for Gmail receipt linking.");
   }
   return payload;
 }

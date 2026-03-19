@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { getChatModel, getReceiptModel } from "@/lib/env";
-import { ReceiptExtraction } from "@/types/receipt";
+import { AmazonOrderExtraction, ReceiptExtraction } from "@/types/receipt";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -16,6 +16,15 @@ const receiptSchema = z.object({
   payment_method: z
     .enum(["reimbursement", "credit_card", "amazon", "unknown"])
     .describe("Use unknown when the receipt does not clearly show the payment method."),
+  confidence: z.number().min(0).max(1),
+  notes: z.string().nullable(),
+});
+
+const amazonOrderSchema = z.object({
+  item_name: z.string().nullable().describe("The main ordered item name. Keep it concise."),
+  amount_total: z.number().nullable().describe("The grand total cost for the order, not a line-item subtotal."),
+  currency: z.string().nullable().describe("ISO 4217 currency code like USD when inferable."),
+  purchase_date: z.string().nullable().describe("Use YYYY-MM-DD when clear, otherwise null."),
   confidence: z.number().min(0).max(1),
   notes: z.string().nullable(),
 });
@@ -110,4 +119,45 @@ export async function answerSlackMention(input: {
   }
 
   return text;
+}
+
+export async function extractAmazonOrderFromEmail(input: {
+  subject: string | null;
+  senderEmail: string | null;
+  receivedAt: string | null;
+  bodyText: string;
+}): Promise<AmazonOrderExtraction> {
+  const response = await client.responses.parse({
+    model: getChatModel(),
+    input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You extract Amazon order purchase data from transactional emails for a robotics club finance workflow. Return one order-level purchase only. item_name should be the clearest single main ordered item label. amount_total must be the grand total for the order. Do not invent values. If item name or total is unclear, return null for that field and explain in notes.",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `Amazon email metadata:\nSubject: ${input.subject || "(none)"}\nFrom: ${input.senderEmail || "(unknown)"}\nReceived: ${input.receivedAt || "(unknown)"}\n\nEmail body:\n${input.bodyText.slice(0, 12000)}`,
+          },
+        ],
+      },
+    ],
+    text: {
+      format: zodTextFormat(amazonOrderSchema, "amazon_order_extraction"),
+    },
+  });
+
+  if (!response.output_parsed) {
+    throw new Error("OpenAI did not return parsed Amazon order output.");
+  }
+
+  return response.output_parsed as AmazonOrderExtraction;
 }

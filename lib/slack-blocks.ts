@@ -1,7 +1,7 @@
-import { GmailAttachmentChoicePayload, LeadTeam, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
+import { GmailAttachmentChoicePayload, LeadTeam, ReceiptPendingPayload, ReceiptExtraction } from "@/types/receipt";
 import { encodeActionValue, encodeAttachmentSelectValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
 
-export function receiptReviewBlocks(params: { teamName: string; payload: PendingReceiptPayload }) {
+export function receiptReviewBlocks(params: { teamName: string; payload: ReceiptPendingPayload }) {
   const { teamName, payload } = params;
   const receipt = payload.extraction;
   const isGmail = isGmailPendingReceiptPayload(payload);
@@ -138,6 +138,76 @@ export function receiptDecisionBlocks(params: {
     },
   ];
 }
+
+export function amazonClaimBlocks(params: {
+  ingestionId: string;
+  itemName: string;
+  amountTotal: number;
+  currency: string | null;
+  purchaseDate: string | null;
+  teams: LeadTeam[];
+}) {
+  const teamRows = chunk(params.teams, 5);
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Amazon Purchase Claim*",
+      },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "Automated from the linked Amazon inbox. Please claim this purchase for the correct team.",
+        },
+      ],
+    },
+    {
+      type: "divider",
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Item*\n${params.itemName}` },
+        { type: "mrkdwn", text: `*Total*\n${prettyCurrency(params.amountTotal, params.currency)}` },
+        { type: "mrkdwn", text: `*Date*\n${params.purchaseDate || "Unknown"}` },
+      ],
+    },
+    ...teamRows.map((teams) => ({
+      type: "actions",
+      elements: teams.map((team) => ({
+        type: "button",
+        text: { type: "plain_text", text: team.name.slice(0, 75) },
+        action_id: "claim_amazon_order",
+        value: encodeActionValue({
+          source: "amazon_order_claim",
+          ingestionId: params.ingestionId,
+          teamId: team.id,
+          teamName: team.name,
+          itemName: params.itemName,
+          amountTotal: params.amountTotal,
+          currency: params.currency,
+          purchaseDate: params.purchaseDate,
+        }),
+      })),
+    })),
+  ];
+}
+
+export function amazonClaimDecisionBlocks(params: { teamName: string }) {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Amazon Purchase Claim*\nClaimed by ${params.teamName}`,
+      },
+    },
+  ];
+}
 export function teamChoiceBlocks(params: {
   teams: LeadTeam[];
   extraction: ReceiptExtraction;
@@ -227,4 +297,12 @@ export function gmailAttachmentChoiceBlocks(params: {
       })),
     },
   ];
+}
+
+function chunk<T>(input: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < input.length; index += size) {
+    chunks.push(input.slice(index, index + size));
+  }
+  return chunks;
 }

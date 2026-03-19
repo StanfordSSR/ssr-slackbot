@@ -3,10 +3,11 @@ import { parse } from "node:querystring";
 import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { after } from "next/server";
+import { buildAmazonOAuthLink, syncActiveAmazonAccountForDays } from "@/lib/amazon-orders";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
 import { getSlackUserIdentity, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
-import { findProfileByEmail, getActiveGmailAccountLinksForProfile, getLeadTeamsForUser, getTeamById } from "@/lib/supabase";
+import { findProfileByEmail, getActiveAmazonAccountLink, getActiveGmailAccountLinksForProfile, getLeadTeamsForUser, getTeamById } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,10 +31,18 @@ export async function POST(request: Request) {
     return handleScanEmailCommand({ text, slackUserId, responseUrl });
   }
 
+  if (command === "/amazonsync") {
+    return handleAmazonSyncCommand({ text, slackUserId, responseUrl });
+  }
+
+  if (command === "/amazonlink") {
+    return handleAmazonLinkCommand({ text, slackUserId });
+  }
+
   if (command && command !== "/link") {
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "This endpoint is for `/link` and `/scanemail`. Usage: `/link your-mailbox@gmail.com` or `/scanemail 7`",
+      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, and `/amazonsync`.",
     });
   }
 
@@ -164,5 +173,103 @@ async function handleScanEmailCommand(params: { text: string; slackUserId: strin
   return NextResponse.json({
     response_type: "ephemeral",
     text: `Starting Gmail scan for the last ${days} day(s). I’ll post the results here when it finishes.`,
+  });
+}
+
+async function handleAmazonLinkCommand(params: { text: string; slackUserId: string }) {
+  const [rawEmail, rawChannelId] = params.text.split(/\s+/).filter(Boolean);
+  const gmailEmail = normalizeGmailAddress(rawEmail || "");
+  const channelId = (rawChannelId || "").trim();
+
+  if (!gmailEmail || !channelId) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Usage: `/amazonlink <email> <channel-id>`",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile?.is_admin) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Only admins can link the Amazon inbox.",
+    });
+  }
+
+  const oauthUrl = await buildAmazonOAuthLink({
+    slackUserId: params.slackUserId,
+    profileId: profile.id,
+    gmailEmail,
+    channelId,
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: `Connect ${gmailEmail} for Amazon order sync into ${channelId}.`,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `Link *${gmailEmail}* to post Amazon claims into *${channelId}*.`,
+        },
+        accessory: {
+          type: "button",
+          text: { type: "plain_text", text: "Connect Gmail" },
+          url: oauthUrl,
+          action_id: "open_amazon_oauth",
+        },
+      },
+    ],
+  });
+}
+
+async function handleAmazonSyncCommand(params: { text: string; slackUserId: string; responseUrl: string }) {
+  const days = parseScanDays(params.text);
+  if (days == null) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Usage: `/amazonsync <days>` where days is a number from 1 to 30. Leaving it blank defaults to 3.",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`,
+    });
+  }
+
+  const leadTeams = await getLeadTeamsForUser(profile.id);
+  if (!profile.is_admin && leadTeams.length === 0) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Only admins or active team leads can run `/amazonsync`.",
+    });
+  }
+
+  const link = await getActiveAmazonAccountLink();
+  if (!link) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "No Amazon inbox is linked yet. Run `/amazonlink <email> <channel-id>` first.",
+    });
+  }
+
+  after(async () => {
+    try {
+      await syncActiveAmazonAccountForDays(days);
+      await postSlackResponse(params.responseUrl, { delete_original: true });
+    } catch (error) {
+      await postDelayedSlackResponse(params.responseUrl, `Amazon sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: `Starting Amazon sync for the last ${days} day(s). I’ll clean this up when it finishes.`,
   });
 }

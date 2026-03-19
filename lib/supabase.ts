@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { getEnv } from "@/lib/env";
-import { GmailArtifactSource, LeadTeam, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
+import { AmazonOrderExtraction, GmailArtifactSource, LeadTeam, ReceiptPendingPayload, ReceiptExtraction } from "@/types/receipt";
 
 const supabase = createClient(getEnv("SUPABASE_URL")!, getEnv("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -10,6 +10,7 @@ export type LeadProfile = {
   id: string;
   full_name: string | null;
   email: string | null;
+  is_admin?: boolean;
 };
 
 export type GmailAccountLink = {
@@ -23,6 +24,20 @@ export type GmailAccountLink = {
   access_token_expires_at: string | null;
   is_active: boolean;
   initial_backfill_completed_at: string | null;
+  last_scan_started_at: string | null;
+  last_scan_completed_at: string | null;
+};
+
+export type AmazonAccountLink = {
+  id: string;
+  linked_by_profile_id: string;
+  gmail_email: string;
+  slack_channel_id: string;
+  google_subject_id: string;
+  refresh_token_encrypted: string;
+  access_token: string | null;
+  access_token_expires_at: string | null;
+  is_active: boolean;
   last_scan_started_at: string | null;
   last_scan_completed_at: string | null;
 };
@@ -50,15 +65,37 @@ export type EmailReceiptIngestion = {
   error_text: string | null;
 };
 
+export type AmazonOrderIngestion = {
+  id: string;
+  amazon_link_id: string;
+  gmail_message_id: string;
+  gmail_thread_id: string | null;
+  sender_email: string | null;
+  subject: string | null;
+  received_at: string | null;
+  item_name: string | null;
+  amount_total: number | null;
+  currency: string | null;
+  purchase_date: string | null;
+  slack_channel_id: string | null;
+  slack_message_ts: string | null;
+  claimed_team_id: string | null;
+  claimed_by_profile_id: string | null;
+  claimed_at: string | null;
+  purchase_log_id: string | null;
+  status: "pending_claim" | "claimed" | "failed";
+  error_text: string | null;
+};
+
 export async function findProfileByEmail(email: string) {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, email")
+    .select("id, full_name, email, is_admin")
     .ilike("email", email)
     .maybeSingle();
 
   if (error) throw error;
-  return data as { id: string; full_name: string | null; email: string | null } | null;
+  return data as { id: string; full_name: string | null; email: string | null; is_admin?: boolean } | null;
 }
 
 export async function getLeadTeamsForUser(userId: string): Promise<LeadTeam[]> {
@@ -113,6 +150,12 @@ export async function getTeamById(teamId: string) {
   return data as { id: string; name: string; slug: string | null } | null;
 }
 
+export async function getActiveTeams(): Promise<LeadTeam[]> {
+  const { data, error } = await supabase.from("teams").select("id, name, slug").eq("is_active", true).order("name");
+  if (error) throw error;
+  return (data ?? []) as LeadTeam[];
+}
+
 export async function uploadReceiptToStorage(params: {
   teamId: string;
   purchaseId: string;
@@ -129,7 +172,7 @@ export async function uploadReceiptToStorage(params: {
 
 export async function createPurchaseLog(params: {
   purchaseId?: string;
-  payload: PendingReceiptPayload;
+  payload: ReceiptPendingPayload;
   profileId: string;
   personName: string | null;
   receipt: {
@@ -137,15 +180,24 @@ export async function createPurchaseLog(params: {
     receipt_file_name: string | null;
     receipt_uploaded_at: string | null;
   };
+  overrides?: {
+    category?: ReceiptPendingPayload["extraction"]["category"];
+    payment_method?: ReceiptPendingPayload["extraction"]["payment_method"];
+    receipt_not_needed?: boolean;
+    description?: string;
+    amount_cents?: number;
+    purchased_at?: string;
+  };
 }) {
   const purchaseId = params.purchaseId || crypto.randomUUID();
-  const purchasedAt = normalizePurchasedAt(params.payload.extraction.purchase_date);
+  const purchasedAt = params.overrides?.purchased_at || normalizePurchasedAt(params.payload.extraction.purchase_date);
   const description =
+    params.overrides?.description ||
     params.payload.extraction.item_name ||
     params.payload.extraction.merchant ||
     params.payload.filename ||
     "Slack receipt purchase";
-  const amountCents = Math.round((params.payload.extraction.amount_total || 0) * 100);
+  const amountCents = params.overrides?.amount_cents ?? Math.round((params.payload.extraction.amount_total || 0) * 100);
 
   const insertPayload = {
     id: purchaseId,
@@ -156,12 +208,45 @@ export async function createPurchaseLog(params: {
     description,
     purchased_at: purchasedAt,
     person_name: params.personName,
-    payment_method: params.payload.extraction.payment_method,
-    category: params.payload.extraction.category,
+    payment_method: params.overrides?.payment_method || params.payload.extraction.payment_method,
+    category: params.overrides?.category || params.payload.extraction.category,
     receipt_path: params.receipt.receipt_path,
     receipt_file_name: params.receipt.receipt_file_name,
     receipt_uploaded_at: params.receipt.receipt_uploaded_at,
-    receipt_not_needed: false,
+    receipt_not_needed: params.overrides?.receipt_not_needed ?? false,
+  };
+
+  const { error } = await supabase.from("purchase_logs").insert(insertPayload);
+  if (error) throw error;
+
+  return { purchaseId };
+}
+
+export async function createAmazonPurchaseLog(params: {
+  purchaseId?: string;
+  teamId: string;
+  profileId: string;
+  personName: string | null;
+  itemName: string;
+  amountTotal: number;
+  purchaseDate: string | null;
+}) {
+  const purchaseId = params.purchaseId || crypto.randomUUID();
+  const insertPayload = {
+    id: purchaseId,
+    team_id: params.teamId,
+    created_by: params.profileId,
+    academic_year: currentAcademicYear(),
+    amount_cents: Math.round(params.amountTotal * 100),
+    description: params.itemName,
+    purchased_at: normalizePurchasedAt(params.purchaseDate),
+    person_name: params.personName,
+    payment_method: "amazon",
+    category: "equipment",
+    receipt_path: null,
+    receipt_file_name: null,
+    receipt_uploaded_at: null,
+    receipt_not_needed: true,
   };
 
   const { error } = await supabase.from("purchase_logs").insert(insertPayload);
@@ -299,6 +384,207 @@ export async function getGmailAccountLinkById(linkId: string) {
 
   if (error) throw error;
   return data as GmailAccountLink | null;
+}
+
+export async function upsertAmazonAccountLink(params: {
+  linkedByProfileId: string;
+  gmailEmail: string;
+  slackChannelId: string;
+  googleSubjectId: string;
+  refreshTokenEncrypted: string;
+  accessToken: string | null;
+  accessTokenExpiresAt: string | null;
+}) {
+  const payload = {
+    linked_by_profile_id: params.linkedByProfileId,
+    gmail_email: params.gmailEmail,
+    slack_channel_id: params.slackChannelId,
+    google_subject_id: params.googleSubjectId,
+    refresh_token_encrypted: params.refreshTokenEncrypted,
+    access_token: params.accessToken,
+    access_token_expires_at: params.accessTokenExpiresAt,
+    is_active: true,
+  };
+
+  const { data: existing, error: existingError } = await supabase
+    .from("amazon_account_links")
+    .select("id")
+    .eq("is_active", true)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  if (existing?.id) {
+    const { data, error } = await supabase
+      .from("amazon_account_links")
+      .update(payload)
+      .eq("id", existing.id)
+      .select(
+        "id, linked_by_profile_id, gmail_email, slack_channel_id, google_subject_id, refresh_token_encrypted, access_token, access_token_expires_at, is_active, last_scan_started_at, last_scan_completed_at",
+      )
+      .single();
+    if (error) throw error;
+    return data as AmazonAccountLink;
+  }
+
+  const { data, error } = await supabase
+    .from("amazon_account_links")
+    .insert(payload)
+    .select(
+      "id, linked_by_profile_id, gmail_email, slack_channel_id, google_subject_id, refresh_token_encrypted, access_token, access_token_expires_at, is_active, last_scan_started_at, last_scan_completed_at",
+    )
+    .single();
+  if (error) throw error;
+  return data as AmazonAccountLink;
+}
+
+export async function getActiveAmazonAccountLink() {
+  const { data, error } = await supabase
+    .from("amazon_account_links")
+    .select(
+      "id, linked_by_profile_id, gmail_email, slack_channel_id, google_subject_id, refresh_token_encrypted, access_token, access_token_expires_at, is_active, last_scan_started_at, last_scan_completed_at",
+    )
+    .eq("is_active", true)
+    .maybeSingle();
+  if (error) throw error;
+  return data as AmazonAccountLink | null;
+}
+
+export async function updateAmazonAccountLinkTokens(params: {
+  linkId: string;
+  accessToken: string | null;
+  accessTokenExpiresAt: string | null;
+  refreshTokenEncrypted?: string;
+}) {
+  const updatePayload: Record<string, string | null> = {
+    access_token: params.accessToken,
+    access_token_expires_at: params.accessTokenExpiresAt,
+  };
+  if (params.refreshTokenEncrypted) {
+    updatePayload.refresh_token_encrypted = params.refreshTokenEncrypted;
+  }
+  const { error } = await supabase.from("amazon_account_links").update(updatePayload).eq("id", params.linkId);
+  if (error) throw error;
+}
+
+export async function markAmazonScanStarted(linkId: string) {
+  const { error } = await supabase
+    .from("amazon_account_links")
+    .update({ last_scan_started_at: new Date().toISOString() })
+    .eq("id", linkId);
+  if (error) throw error;
+}
+
+export async function markAmazonScanCompleted(linkId: string) {
+  const { error } = await supabase
+    .from("amazon_account_links")
+    .update({ last_scan_completed_at: new Date().toISOString() })
+    .eq("id", linkId);
+  if (error) throw error;
+}
+
+export async function disableAmazonAccountLink(linkId: string) {
+  const { error } = await supabase.from("amazon_account_links").update({ is_active: false }).eq("id", linkId);
+  if (error) throw error;
+}
+
+export async function getAmazonOrderIngestionByMessage(params: { amazonLinkId: string; gmailMessageId: string }) {
+  const { data, error } = await supabase
+    .from("amazon_order_ingestions")
+    .select(
+      "id, amazon_link_id, gmail_message_id, gmail_thread_id, sender_email, subject, received_at, item_name, amount_total, currency, purchase_date, slack_channel_id, slack_message_ts, claimed_team_id, claimed_by_profile_id, claimed_at, purchase_log_id, status, error_text",
+    )
+    .eq("amazon_link_id", params.amazonLinkId)
+    .eq("gmail_message_id", params.gmailMessageId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as AmazonOrderIngestion | null;
+}
+
+export async function createAmazonOrderIngestion(params: {
+  amazonLinkId: string;
+  gmailMessageId: string;
+  gmailThreadId: string | null;
+  senderEmail: string | null;
+  subject: string | null;
+  receivedAt: string | null;
+  extraction: AmazonOrderExtraction;
+}) {
+  const { data, error } = await supabase
+    .from("amazon_order_ingestions")
+    .insert({
+      amazon_link_id: params.amazonLinkId,
+      gmail_message_id: params.gmailMessageId,
+      gmail_thread_id: params.gmailThreadId,
+      sender_email: params.senderEmail,
+      subject: params.subject,
+      received_at: params.receivedAt,
+      item_name: params.extraction.item_name,
+      amount_total: params.extraction.amount_total,
+      currency: params.extraction.currency,
+      purchase_date: params.extraction.purchase_date,
+      status: "pending_claim",
+    })
+    .select(
+      "id, amazon_link_id, gmail_message_id, gmail_thread_id, sender_email, subject, received_at, item_name, amount_total, currency, purchase_date, slack_channel_id, slack_message_ts, claimed_team_id, claimed_by_profile_id, claimed_at, purchase_log_id, status, error_text",
+    )
+    .single();
+  if (error) throw error;
+  return data as AmazonOrderIngestion;
+}
+
+export async function markAmazonOrderIngestionPosted(params: { ingestionId: string; slackChannelId: string; slackMessageTs: string }) {
+  const { error } = await supabase
+    .from("amazon_order_ingestions")
+    .update({ slack_channel_id: params.slackChannelId, slack_message_ts: params.slackMessageTs })
+    .eq("id", params.ingestionId)
+    .eq("status", "pending_claim");
+  if (error) throw error;
+}
+
+export async function markAmazonOrderIngestionFailed(ingestionId: string, errorText: string) {
+  const { error } = await supabase
+    .from("amazon_order_ingestions")
+    .update({ status: "failed", error_text: errorText })
+    .eq("id", ingestionId);
+  if (error) throw error;
+}
+
+export async function getAmazonOrderIngestionById(ingestionId: string) {
+  const { data, error } = await supabase
+    .from("amazon_order_ingestions")
+    .select(
+      "id, amazon_link_id, gmail_message_id, gmail_thread_id, sender_email, subject, received_at, item_name, amount_total, currency, purchase_date, slack_channel_id, slack_message_ts, claimed_team_id, claimed_by_profile_id, claimed_at, purchase_log_id, status, error_text",
+    )
+    .eq("id", ingestionId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as AmazonOrderIngestion | null;
+}
+
+export async function claimAmazonOrderIngestion(params: {
+  ingestionId: string;
+  teamId: string;
+  profileId: string;
+  purchaseLogId: string;
+}) {
+  const claimedAt = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("amazon_order_ingestions")
+    .update({
+      status: "claimed",
+      claimed_team_id: params.teamId,
+      claimed_by_profile_id: params.profileId,
+      claimed_at: claimedAt,
+      purchase_log_id: params.purchaseLogId,
+    })
+    .eq("id", params.ingestionId)
+    .eq("status", "pending_claim")
+    .select(
+      "id, amazon_link_id, gmail_message_id, gmail_thread_id, sender_email, subject, received_at, item_name, amount_total, currency, purchase_date, slack_channel_id, slack_message_ts, claimed_team_id, claimed_by_profile_id, claimed_at, purchase_log_id, status, error_text",
+    )
+    .maybeSingle();
+  if (error) throw error;
+  return data as AmazonOrderIngestion | null;
 }
 
 export async function updateGmailAccountLinkTokens(params: {

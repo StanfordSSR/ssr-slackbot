@@ -3,6 +3,10 @@
     {
       "path": "/api/gmail/sync",
       "schedule": "0 9 */3 * *"
+    },
+    {
+      "path": "/api/amazon/sync",
+      "schedule": "0 * * * *"
     }
   ]
 }
