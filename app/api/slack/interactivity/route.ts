@@ -3,6 +3,7 @@ import { parse } from "node:querystring";
 import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
+import { recordAuditEvent } from "@/lib/audit";
 import { decodeActionValue, decodeAttachmentSelectValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
 import { receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
@@ -161,6 +162,23 @@ export async function POST(request: Request) {
       receipt,
     });
 
+    await recordAuditEvent({
+      actorId: profile.id,
+      action: "purchase.added",
+      targetType: "slack_receipt",
+      targetId: purchaseId,
+      summary: `Bot added purchase for ${decoded.teamName} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"} from Slack file "${decoded.filename}".`,
+      details: {
+        source: "slack",
+        teamId: decoded.teamId,
+        teamName: decoded.teamName,
+        purchaseId,
+        filename: decoded.filename,
+        slackUserId: payload.user.id,
+        actorName: profile.full_name || identity.realName || identity.displayName,
+      },
+    });
+
     await postDm(
       channel,
       `Logged *${decoded.extraction.item_name || decoded.extraction.merchant || "receipt purchase"}* for *${decoded.teamName}*.
@@ -314,7 +332,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
           attachmentOptions: decoded.attachmentOptions,
         };
 
-        await createPurchaseLog({
+        const { purchaseId } = await createPurchaseLog({
           payload: gmailPayload,
           profileId: profile.id,
           personName: profile.full_name || identity.realName || identity.displayName,
@@ -322,6 +340,27 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
             receipt_path: finalIngestion.artifact_storage_path,
             receipt_file_name: finalIngestion.artifact_filename,
             receipt_uploaded_at: finalIngestion.received_at || new Date().toISOString(),
+          },
+        });
+
+        await recordAuditEvent({
+          actorId: profile.id,
+          action: "purchase.added",
+          targetType: "email_receipt_ingestion",
+          targetId: finalIngestion.id,
+          summary: `Bot added purchase for ${team.name} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"} from email "${finalIngestion.subject || "No subject"}".`,
+          details: {
+            source: "gmail",
+            teamId: finalIngestion.team_id,
+            teamName: team.name,
+            purchaseId,
+            ingestionId: finalIngestion.id,
+            subject: finalIngestion.subject,
+            senderEmail: finalIngestion.sender_email,
+            filename: finalIngestion.artifact_filename,
+            slackUserId: payload.user.id,
+            actorName: profile.full_name || identity.realName || identity.displayName,
+            automated: true,
           },
         });
 
