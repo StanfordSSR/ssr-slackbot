@@ -54,4 +54,13 @@ export type GmailPendingReceiptPayload = {
   extraction: ReceiptExtraction;
 };
 
+export type GmailAttachmentChoicePayload = {
+  source: "gmail_attachment_choice";
+  ingestionId: string;
+  teamId: string;
+  teamName: string;
+  attachmentPartId: string;
+  filename: string;
+};
+
 export type PendingReceiptPayload = SlackPendingReceiptPayload | GmailPendingReceiptPayload;

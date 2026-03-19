@@ -1,4 +1,4 @@
-import { LeadTeam, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
+import { GmailAttachmentChoicePayload, LeadTeam, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
 import { encodeActionValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
 
 export function receiptReviewBlocks(params: { teamName: string; payload: PendingReceiptPayload }) {
@@ -111,6 +111,39 @@ export function gmailLinkTeamChoiceBlocks(params: { teams: LeadTeam[]; gmailEmai
         value: Buffer.from(JSON.stringify({ teamId: team.id, teamName: team.name, gmailEmail: params.gmailEmail }), "utf8").toString(
           "base64url",
         ),
+      })),
+    },
+  ];
+}
+
+export function gmailAttachmentChoiceBlocks(params: {
+  teamName: string;
+  ingestionId: string;
+  teamId: string;
+  attachments: Array<{ partId: string; filename: string }>;
+}) {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `Multiple receipt files were attached for *${params.teamName}*. Pick which file to log.`,
+      },
+    },
+    {
+      type: "actions",
+      elements: params.attachments.slice(0, 5).map((attachment) => ({
+        type: "button",
+        text: { type: "plain_text", text: attachment.filename.slice(0, 75) },
+        action_id: "choose_email_attachment",
+        value: encodeActionValue({
+          source: "gmail_attachment_choice",
+          ingestionId: params.ingestionId,
+          teamId: params.teamId,
+          teamName: params.teamName,
+          attachmentPartId: attachment.partId,
+          filename: attachment.filename,
+        } satisfies GmailAttachmentChoicePayload),
       })),
     },
   ];

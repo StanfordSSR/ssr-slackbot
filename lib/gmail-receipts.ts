@@ -2,7 +2,9 @@ import { compactExtractionForSlack, isSupportedReceiptMimeType, toDataUrl } from
 import { buildGoogleConsentUrl, createGmailOAuthState, refreshGoogleAccessToken } from "@/lib/google-oauth";
 import {
   fetchGmailMessage,
+  findSupportedReceiptAttachmentPart,
   getMessageMetadata,
+  listSupportedReceiptAttachments,
   markGmailMessageRead,
   materializeReceiptAttachment,
   pickReceiptArtifactFromMessage,
@@ -67,23 +69,89 @@ export async function syncGmailLink(link: GmailAccountLink) {
   return syncGmailLinkForDays(link);
 }
 
+export async function getAuthorizedGmailAccessToken(link: GmailAccountLink) {
+  let accessToken = link.access_token;
+
+  if (!accessToken || isExpired(link.access_token_expires_at)) {
+    const refreshed = await refreshGoogleAccessToken(decryptSecret(link.refresh_token_encrypted));
+    accessToken = refreshed.access_token;
+    await updateGmailAccountLinkTokens({
+      linkId: link.id,
+      accessToken,
+      accessTokenExpiresAt: toExpiryIso(refreshed.expires_in),
+      refreshTokenEncrypted: refreshed.refresh_token ? encryptSecret(refreshed.refresh_token) : undefined,
+    });
+  }
+
+  return accessToken;
+}
+
+export async function getSupportedEmailAttachments(link: GmailAccountLink, messageId: string) {
+  const accessToken = await getAuthorizedGmailAccessToken(link);
+  const message = await fetchGmailMessage(accessToken, messageId);
+  return {
+    accessToken,
+    message,
+    attachments: listSupportedReceiptAttachments(message),
+  };
+}
+
+export async function rebuildEmailIngestionAttachment(params: {
+  link: GmailAccountLink;
+  teamId: string;
+  messageId: string;
+  attachmentPartId: string;
+}) {
+  const { link, teamId, messageId, attachmentPartId } = params;
+  const accessToken = await getAuthorizedGmailAccessToken(link);
+  const message = await fetchGmailMessage(accessToken, messageId);
+  const part = findSupportedReceiptAttachmentPart(message, attachmentPartId);
+  if (!part) {
+    throw new Error("That email attachment is no longer available.");
+  }
+
+  const materialized = await materializeReceiptAttachment(accessToken, message.id, part);
+  const artifactId = crypto.randomUUID();
+  const storagePath = buildGmailStoragePath({
+    teamId,
+    artifactId,
+    filename: materialized.filename,
+    mimeType: materialized.mimeType,
+  });
+
+  await uploadStorageArtifact({
+    path: storagePath,
+    fileBytes: toArrayBuffer(materialized.bytes),
+    mimeType: materialized.mimeType,
+    filename: materialized.filename,
+  });
+
+  const extraction = compactExtractionForSlack(
+    forceEmailPaymentMethod(
+      await extractReceiptFromImage({
+        dataUrl: toDataUrl(toArrayBuffer(materialized.bytes), materialized.mimeType),
+        mimeType: materialized.mimeType,
+        filename: materialized.filename,
+      }),
+    ),
+  );
+
+  return {
+    artifactSource: "attachment" as const,
+    artifactFilename: materialized.filename,
+    artifactMimeType: materialized.mimeType,
+    artifactStoragePath: storagePath,
+    extraction,
+  };
+}
+
 export async function syncGmailLinkForDays(link: GmailAccountLink, daysOverride?: number) {
   await markGmailScanStarted(link.id);
   const initialBackfill = daysOverride == null && !link.initial_backfill_completed_at;
   const days = daysOverride ?? (initialBackfill ? 10 : 3);
-  let accessToken = link.access_token;
 
   try {
-    if (!accessToken || isExpired(link.access_token_expires_at)) {
-      const refreshed = await refreshGoogleAccessToken(decryptSecret(link.refresh_token_encrypted));
-      accessToken = refreshed.access_token;
-      await updateGmailAccountLinkTokens({
-        linkId: link.id,
-        accessToken: accessToken,
-        accessTokenExpiresAt: toExpiryIso(refreshed.expires_in),
-        refreshTokenEncrypted: refreshed.refresh_token ? encryptSecret(refreshed.refresh_token) : undefined,
-      });
-    }
+    const accessToken = await getAuthorizedGmailAccessToken(link);
 
     const messageIds = await searchUnreadGmailMessageIds(accessToken, days);
     let processed = 0;
@@ -118,6 +186,9 @@ async function ingestGmailMessage(params: { link: GmailAccountLink; accessToken:
   const message = await fetchGmailMessage(accessToken, messageId);
   const artifact = pickReceiptArtifactFromMessage(message);
   if (!artifact) {
+    return 0;
+  }
+  if (!artifact.part) {
     return 0;
   }
 

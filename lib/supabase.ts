@@ -419,6 +419,30 @@ export async function markEmailReceiptIngestionFailed(ingestionId: string, error
   if (error) throw error;
 }
 
+export async function updateEmailReceiptIngestionDraft(params: {
+  ingestionId: string;
+  artifactSource: GmailArtifactSource;
+  artifactFilename: string;
+  artifactMimeType: string;
+  artifactStoragePath: string;
+  extraction: ReceiptExtraction;
+}) {
+  const { error } = await supabase
+    .from("email_receipt_ingestions")
+    .update({
+      artifact_source: params.artifactSource,
+      artifact_filename: params.artifactFilename,
+      artifact_mime_type: params.artifactMimeType,
+      artifact_storage_path: params.artifactStoragePath,
+      extraction: params.extraction,
+      error_text: null,
+    })
+    .eq("id", params.ingestionId)
+    .eq("status", "pending_approval");
+
+  if (error) throw error;
+}
+
 export async function getEmailReceiptIngestionById(ingestionId: string) {
   const { data, error } = await supabase
     .from("email_receipt_ingestions")

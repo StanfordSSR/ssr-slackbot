@@ -1,4 +1,4 @@
-import { PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
+import { GmailAttachmentChoicePayload, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
 
 export function toDataUrl(bytes: ArrayBuffer, mimeType: string) {
   const base64 = Buffer.from(bytes).toString("base64");
@@ -30,14 +30,28 @@ export function compactExtractionForSlack(extraction: ReceiptExtraction): Receip
   };
 }
 
-export function encodeActionValue(payload: PendingReceiptPayload) {
+export function encodeActionValue(payload: PendingReceiptPayload | GmailAttachmentChoicePayload) {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
-export function decodeActionValue(value: string): PendingReceiptPayload {
-  return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as PendingReceiptPayload;
+export function decodeActionValue(value: string): PendingReceiptPayload | GmailAttachmentChoicePayload {
+  return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as PendingReceiptPayload | GmailAttachmentChoicePayload;
 }
 
-export function isGmailPendingReceiptPayload(payload: PendingReceiptPayload) {
-  return payload.source === "gmail";
+export function isGmailPendingReceiptPayload(payload: unknown): payload is Extract<PendingReceiptPayload, { source: "gmail" }> {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      "source" in payload &&
+      (payload as { source?: string }).source === "gmail",
+  );
+}
+
+export function isGmailAttachmentChoicePayload(payload: unknown): payload is GmailAttachmentChoicePayload {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      "source" in payload &&
+      (payload as { source?: string }).source === "gmail_attachment_choice",
+  );
 }

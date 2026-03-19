@@ -13,6 +13,12 @@ type GmailMessagePart = {
   parts?: GmailMessagePart[];
 };
 
+export type GmailAttachmentOption = {
+  partId: string;
+  filename: string;
+  mimeType: string;
+};
+
 export type GmailMessage = {
   id: string;
   threadId: string;
@@ -80,14 +86,28 @@ export async function markGmailMessageRead(accessToken: string, messageId: strin
 }
 
 export function pickReceiptArtifactFromMessage(message: GmailMessage) {
-  const attachments = flattenMessageParts(message.payload).filter((part) => isSupportedReceiptPart(part));
+  const attachments = listSupportedReceiptAttachments(message);
   if (attachments.length > 0) {
     return {
       kind: "attachment" as const,
-      part: attachments[0],
+      part: findSupportedReceiptAttachmentPart(message, attachments[0].partId),
     };
   }
   return null;
+}
+
+export function listSupportedReceiptAttachments(message: GmailMessage): GmailAttachmentOption[] {
+  return flattenMessageParts(message.payload)
+    .filter((part) => isSupportedReceiptPart(part) && part.partId)
+    .map((part) => ({
+      partId: part.partId!,
+      filename: part.filename!,
+      mimeType: part.mimeType || inferMimeTypeFromFilename(part.filename || "receipt"),
+    }));
+}
+
+export function findSupportedReceiptAttachmentPart(message: GmailMessage, partId: string) {
+  return flattenMessageParts(message.payload).find((part) => part.partId === partId && isSupportedReceiptPart(part)) || null;
 }
 
 export function getMessageMetadata(message: GmailMessage) {
