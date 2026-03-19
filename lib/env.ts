@@ -7,7 +7,10 @@ const required = [
 ] as const;
 
 type RequiredEnv = (typeof required)[number];
-type OptionalEnv = "OPENAI_RECEIPT_MODEL" | "SUPABASE_RECEIPT_BUCKET" | "SUPABASE_RECEIPT_PATH_PREFIX";
+type OptionalEnv =
+  | "OPENAI_RECEIPT_MODEL"
+  | "SUPABASE_RECEIPT_BUCKET"
+  | "SUPABASE_RECEIPT_PATH_PREFIX";
 
 export function getEnv(name: RequiredEnv | OptionalEnv) {
   const value = process.env[name];

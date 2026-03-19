@@ -21,6 +21,8 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
         { type: "mrkdwn", text: `*Amount*\n${prettyCurrency(receipt.amount_total, receipt.currency)}` },
         { type: "mrkdwn", text: `*Date*\n${receipt.purchase_date ?? "Unknown"}` },
         { type: "mrkdwn", text: `*Item*\n${receipt.item_name ?? "Unknown"}` },
+        { type: "mrkdwn", text: `*Category*\n${receipt.category}` },
+        { type: "mrkdwn", text: `*Payment*\n${receipt.payment_method}` },
         { type: "mrkdwn", text: `*Confidence*\n${Math.round(receipt.confidence * 100)}%` },
       ],
     },

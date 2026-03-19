@@ -12,6 +12,10 @@ const receiptSchema = z.object({
   amount_total: z.number().nullable(),
   currency: z.string().nullable().describe("Use ISO 4217 when inferable, like USD or CAD."),
   item_name: z.string().nullable().describe("A concise label for the purchase, not a long line-item list."),
+  category: z.enum(["equipment", "food", "travel"]).describe("Pick the closest HQ category for the purchase."),
+  payment_method: z
+    .enum(["reimbursement", "credit_card", "amazon", "unknown"])
+    .describe("Use unknown when the receipt does not clearly show the payment method."),
   confidence: z.number().min(0).max(1),
   notes: z.string().nullable(),
 });
@@ -39,7 +43,7 @@ export async function extractReceiptFromImage(input: { dataUrl: string; mimeType
           {
             type: "input_text",
             text:
-              "You extract receipt fields for a robotics club expense workflow. Return null for uncertain fields instead of guessing. Amount must be the final total charged, not subtotal or tax. item_name must be a short, human-friendly purchase label. For handwritten or blurry receipts, lower confidence and explain uncertainty in notes.",
+              "You extract receipt fields for a robotics club expense workflow. Return null for uncertain free-text fields instead of guessing. Amount must be the final total charged, not subtotal or tax. item_name must be a short, human-friendly purchase label. category must always be exactly one of equipment, food, or travel based on the best fit for the purchase. payment_method must always be exactly one of reimbursement, credit_card, amazon, or unknown; use amazon only for clear Amazon orders and unknown when the receipt does not prove the method. For handwritten or blurry receipts, lower confidence and explain uncertainty in notes.",
           },
         ],
       },
