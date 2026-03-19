@@ -155,5 +155,7 @@ function currentAcademicYear() {
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
-  return month >= 9 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
+  const startYear = month >= 9 ? year : year - 1;
+  const endYearShort = String((startYear + 1) % 100).padStart(2, "0");
+  return `${startYear}-${endYearShort}`;
 }
