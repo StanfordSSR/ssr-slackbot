@@ -26,5 +26,5 @@ export function getReceiptModel() {
 }
 
 export function getChatModel() {
-  return process.env.OPENAI_CHAT_MODEL || "gpt-5-mini";
+  return process.env.OPENAI_CHAT_MODEL || "gpt-5.1";
 }

@@ -215,16 +215,33 @@ async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event
     promptPreview: prompt.slice(0, 160),
   });
 
-  const history = await fetchConversationHistory(channel, 15);
-  const context = (history.messages ?? [])
-    .filter((message) => !message.subtype)
-    .reverse()
-    .map((message) => ({
-      speaker: message.user ? `<@${message.user}>` : message.bot_id ? "bot" : "unknown",
-      text: cleanMentionText(message.text).slice(0, 500),
-    }))
-    .filter((message) => message.text);
+  let context: Array<{ speaker: string; text: string }> = [];
+  try {
+    const history = await fetchConversationHistory(channel, 15);
+    context = (history.messages ?? [])
+      .filter((message) => !message.subtype)
+      .reverse()
+      .map((message) => ({
+        speaker: message.user ? `<@${message.user}>` : message.bot_id ? "bot" : "unknown",
+        text: cleanMentionText(message.text).slice(0, 500),
+      }))
+      .filter((message) => message.text);
 
+    console.info("Loaded Slack mention context", {
+      channel,
+      messageCount: context.length,
+    });
+  } catch (error) {
+    console.warn("Could not load Slack channel history for mention context", {
+      channel,
+      error,
+    });
+  }
+
+  console.info("Generating Slack mention reply", {
+    channel,
+    hasContext: context.length > 0,
+  });
   const reply = await answerSlackMention({ prompt, history: context });
   await postMessage(channel, reply, undefined, ts);
 }
