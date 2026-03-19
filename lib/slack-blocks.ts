@@ -1,5 +1,5 @@
 import { GmailAttachmentChoicePayload, LeadTeam, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
-import { encodeActionValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
+import { encodeActionValue, encodeAttachmentSelectValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
 
 export function receiptReviewBlocks(params: { teamName: string; payload: PendingReceiptPayload }) {
   const { teamName, payload } = params;
@@ -66,6 +66,8 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
   });
 
   if (isGmail && payload.attachmentOptions && payload.attachmentOptions.length > 1) {
+    const selectedAttachment =
+      payload.attachmentOptions.find((attachment) => attachment.partId === payload.selectedAttachmentPartId) || payload.attachmentOptions[0];
     blocks.push({
       type: "actions",
       elements: [
@@ -79,30 +81,16 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
           initial_option: {
             text: {
               type: "plain_text",
-              text: findSelectedAttachmentLabel(payload),
+              text: selectedAttachment.filename.slice(0, 75),
             },
-            value: encodeActionValue({
-              source: "gmail_attachment_choice",
-              ingestionId: payload.ingestionId,
-              teamId: payload.teamId,
-              teamName: payload.teamName,
-              attachmentPartId: payload.selectedAttachmentPartId || payload.attachmentOptions[0].partId,
-              filename: payload.filename,
-            } satisfies GmailAttachmentChoicePayload),
+            value: encodeAttachmentSelectValue(payload.ingestionId, selectedAttachment.partId),
           },
           options: payload.attachmentOptions.slice(0, 100).map((attachment) => ({
             text: {
               type: "plain_text",
               text: attachment.filename.slice(0, 75),
             },
-            value: encodeActionValue({
-              source: "gmail_attachment_choice",
-              ingestionId: payload.ingestionId,
-              teamId: payload.teamId,
-              teamName: payload.teamName,
-              attachmentPartId: attachment.partId,
-              filename: attachment.filename,
-            } satisfies GmailAttachmentChoicePayload),
+            value: encodeAttachmentSelectValue(payload.ingestionId, attachment.partId),
           })),
         },
       ],
@@ -131,13 +119,6 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
 
   return blocks;
 }
-
-function findSelectedAttachmentLabel(payload: Extract<PendingReceiptPayload, { source: "gmail" }>) {
-  const selected =
-    payload.attachmentOptions?.find((attachment) => attachment.partId === payload.selectedAttachmentPartId)?.filename || payload.filename;
-  return selected.slice(0, 75);
-}
-
 export function teamChoiceBlocks(params: {
   teams: LeadTeam[];
   extraction: ReceiptExtraction;

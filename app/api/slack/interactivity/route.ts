@@ -3,7 +3,7 @@ import { parse } from "node:querystring";
 import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
-import { decodeActionValue, isGmailAttachmentChoicePayload, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
+import { decodeActionValue, decodeAttachmentSelectValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
 import { receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
@@ -267,10 +267,7 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
 
   if (action.action_id === "select_email_attachment") {
     if (!channel) return NextResponse.json({ ok: true });
-    const decoded = decodeActionValue(actionValue);
-    if (!isGmailAttachmentChoicePayload(decoded)) {
-      return NextResponse.json({ text: "That attachment choice was invalid.", replace_original: false });
-    }
+    const decoded = decodeAttachmentSelectValue(actionValue);
 
     const identity = await getSlackUserIdentity(payload.user.id);
     const profile = await findProfileByEmail(identity.email);
@@ -279,16 +276,16 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
       return NextResponse.json({ text: "Missing HQ profile match.", replace_original: false });
     }
 
-    const leadTeams = await getLeadTeamsForUser(profile.id);
-    const authorized = leadTeams.some((team) => team.id === decoded.teamId);
-    if (!authorized) {
-      await postDm(channel, "You are no longer authorized to review receipts for that team.");
-      return NextResponse.json({ text: "Not authorized.", replace_original: false });
-    }
-
     const current = await getEmailReceiptIngestionById(decoded.ingestionId);
     if (!current) {
       return NextResponse.json({ text: "That email receipt was not found.", replace_original: false });
+    }
+
+    const leadTeams = await getLeadTeamsForUser(profile.id);
+    const authorized = leadTeams.some((team) => team.id === current.team_id);
+    if (!authorized) {
+      await postDm(channel, "You are no longer authorized to review receipts for that team.");
+      return NextResponse.json({ text: "Not authorized.", replace_original: false });
     }
 
     const link = await getGmailAccountLinkById(current.gmail_link_id);
@@ -305,8 +302,10 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
     });
 
     if (rebuilt.extraction.confidence < 0.5) {
+      const selectedFilename =
+        attachments.find((attachment) => attachment.partId === decoded.attachmentPartId)?.filename || "that attachment";
       return NextResponse.json({
-        text: `Skipped *${decoded.filename}* because the extracted confidence was under 50%. Pick another file if you want.`,
+        text: `Skipped *${selectedFilename}* because the extracted confidence was under 50%. Pick another file if you want.`,
         replace_original: false,
       });
     }
@@ -339,7 +338,7 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
     };
 
     return NextResponse.json({
-      text: `Updated draft to use ${decoded.filename}.`,
+      text: `Updated draft to use ${rebuilt.artifactFilename}.`,
       replace_original: true,
       blocks: receiptReviewBlocks({ teamName: current.teamName, payload: updatedPayload }),
     });

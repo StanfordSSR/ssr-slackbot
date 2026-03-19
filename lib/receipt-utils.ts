@@ -55,3 +55,19 @@ export function isGmailAttachmentChoicePayload(payload: unknown): payload is Gma
       (payload as { source?: string }).source === "gmail_attachment_choice",
   );
 }
+
+export function encodeAttachmentSelectValue(ingestionId: string, attachmentPartId: string) {
+  return `${ingestionId}:${attachmentPartId}`;
+}
+
+export function decodeAttachmentSelectValue(value: string) {
+  const separatorIndex = value.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    throw new Error("Invalid attachment selection value.");
+  }
+
+  return {
+    ingestionId: value.slice(0, separatorIndex),
+    attachmentPartId: value.slice(separatorIndex + 1),
+  };
+}
