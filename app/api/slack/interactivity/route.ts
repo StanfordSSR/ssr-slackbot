@@ -18,6 +18,7 @@ import {
   recordEmailReceiptApproval,
   rejectEmailReceiptIngestion,
   updateEmailReceiptIngestionDraft,
+  updateEmailReceiptIngestionSelection,
   uploadReceiptToStorage,
 } from "@/lib/supabase";
 import {
@@ -247,8 +248,12 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
         }
 
         let finalIngestion = current;
+        const storedSelectedAttachmentPartId =
+          current.slack_dm_message_refs?.find((ref) => ref.slack_user_id === payload.user.id && ref.channel === channel)
+            ?.selected_attachment_part_id ?? null;
+        const selectedAttachmentPartId = storedSelectedAttachmentPartId || decoded.selectedAttachmentPartId || null;
 
-        if (decoded.selectedAttachmentPartId) {
+        if (selectedAttachmentPartId) {
           const link = await getGmailAccountLinkById(current.gmail_link_id);
           if (!link) {
             await postSlackResponse(responseUrl, {
@@ -263,7 +268,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
             link,
             teamId: current.team_id,
             messageId: current.gmail_message_id,
-            attachmentPartId: decoded.selectedAttachmentPartId,
+            attachmentPartId: selectedAttachmentPartId,
           });
 
           if (rebuilt.extraction.confidence < 0.5) {
@@ -328,7 +333,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
           senderEmail: finalIngestion.sender_email,
           subject: finalIngestion.subject,
           extraction: finalIngestion.extraction,
-          selectedAttachmentPartId: decoded.selectedAttachmentPartId ?? null,
+          selectedAttachmentPartId,
           attachmentOptions: decoded.attachmentOptions,
         };
 
@@ -441,6 +446,12 @@ Amount: ${finalIngestion.extraction.amount_total ?? "unknown"}`,
         }
 
         const { attachments } = await getSupportedEmailAttachments(link, current.gmail_message_id);
+        await updateEmailReceiptIngestionSelection({
+          ingestionId: current.id,
+          slackUserId: payload.user.id,
+          channel,
+          attachmentPartId: decoded.attachmentPartId,
+        });
         const rebuilt = await rebuildEmailIngestionAttachment({
           link,
           teamId: current.team_id,

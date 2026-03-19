@@ -42,7 +42,9 @@ export type EmailReceiptIngestion = {
   artifact_storage_path: string;
   extraction: ReceiptExtraction;
   status: "pending_approval" | "approved" | "rejected" | "duplicate" | "failed";
-  slack_dm_message_refs: Array<{ slack_user_id: string; channel: string; ts: string }> | null;
+  slack_dm_message_refs:
+    | Array<{ slack_user_id: string; channel: string; ts: string; selected_attachment_part_id?: string | null }>
+    | null;
   approved_by: string | null;
   approved_at: string | null;
   error_text: string | null;
@@ -402,12 +404,36 @@ export async function createEmailReceiptIngestion(params: {
 
 export async function updateEmailReceiptIngestionMessages(
   ingestionId: string,
-  refs: Array<{ slack_user_id: string; channel: string; ts: string }>,
+  refs: Array<{ slack_user_id: string; channel: string; ts: string; selected_attachment_part_id?: string | null }>,
 ) {
   const { error } = await supabase
     .from("email_receipt_ingestions")
     .update({ slack_dm_message_refs: refs })
     .eq("id", ingestionId);
+  if (error) throw error;
+}
+
+export async function updateEmailReceiptIngestionSelection(params: {
+  ingestionId: string;
+  slackUserId: string;
+  channel: string;
+  attachmentPartId: string;
+}) {
+  const current = await getEmailReceiptIngestionById(params.ingestionId);
+  if (!current) return;
+
+  const refs = (current.slack_dm_message_refs ?? []).map((ref) =>
+    ref.slack_user_id === params.slackUserId && ref.channel === params.channel
+      ? { ...ref, selected_attachment_part_id: params.attachmentPartId }
+      : ref,
+  );
+
+  const { error } = await supabase
+    .from("email_receipt_ingestions")
+    .update({ slack_dm_message_refs: refs })
+    .eq("id", params.ingestionId)
+    .eq("status", "pending_approval");
+
   if (error) throw error;
 }
 
