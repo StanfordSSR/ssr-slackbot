@@ -147,9 +147,20 @@ export function amazonClaimBlocks(params: {
   purchaseDate: string | null;
   teams: LeadTeam[];
 }) {
-  const teamRows = chunk(params.teams, 5);
-  const safeItemName = params.itemName.replace(/\s+/g, " ").trim().slice(0, 180) || "Amazon order";
-  const summaryText = `*Amazon Purchase Claim*\n${safeItemName}\n${prettyCurrency(params.amountTotal, params.currency)}${params.purchaseDate ? ` • ${params.purchaseDate}` : ""}\nPlease claim this purchase for the correct team.`;
+  const safeTeams = params.teams
+    .filter((team) => team.id && team.name?.trim())
+    .map((team) => ({
+      id: team.id,
+      name: team.name.trim().slice(0, 40),
+    }));
+  const teamRows = chunk(safeTeams, 5);
+  const safeItemName = params.itemName.replace(/\s+/g, " ").trim().slice(0, 120) || "Amazon order";
+  const summaryText =
+    `*Amazon Purchase Claim*\n` +
+    `Item: ${safeItemName}\n` +
+    `Total: ${prettyCurrency(params.amountTotal, params.currency)}\n` +
+    `Date: ${params.purchaseDate || "Unknown"}\n` +
+    `Please claim this purchase for the correct team.`;
   return [
     {
       type: "section",
@@ -162,7 +173,7 @@ export function amazonClaimBlocks(params: {
       type: "actions",
       elements: teams.map((team) => ({
         type: "button",
-        text: { type: "plain_text", text: team.name.slice(0, 75) },
+        text: { type: "plain_text", text: team.name },
         action_id: "claim_amazon_order",
         value: encodeAmazonClaimValue(params.ingestionId, team.id),
       })),

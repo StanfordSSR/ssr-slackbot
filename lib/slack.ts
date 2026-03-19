@@ -18,7 +18,8 @@ async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const json = (await response.json()) as T & { ok?: boolean; error?: string };
 
   if ((json as { ok?: boolean }).ok === false) {
-    throw new Error(`Slack API error on ${path}: ${(json as { error?: string }).error ?? "unknown_error"}`);
+    const metadata = (json as { response_metadata?: { messages?: string[] } }).response_metadata?.messages?.join(" | ");
+    throw new Error(`Slack API error on ${path}: ${(json as { error?: string }).error ?? "unknown_error"}${metadata ? `: ${metadata}` : ""}`);
   }
 
   return json;

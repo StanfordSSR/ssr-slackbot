@@ -154,7 +154,7 @@ async function ingestAmazonOrderMessage(params: { link: AmazonAccountLink; acces
 
     const result = await postMessage(
       link.slack_channel_id,
-      `Amazon purchase: ${extraction.item_name} - ${formatAmount(extraction.amount_total, extraction.currency)}`,
+      `Amazon purchase: ${(extraction.item_name || "Amazon order").replace(/\s+/g, " ").trim().slice(0, 120)} - ${formatAmount(extraction.amount_total, extraction.currency)}`,
       amazonClaimBlocks({
         ingestionId: ingestion.id,
         itemName: extraction.item_name,
