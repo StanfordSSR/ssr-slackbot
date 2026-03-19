@@ -565,7 +565,6 @@ export async function claimAmazonOrderIngestion(params: {
   ingestionId: string;
   teamId: string;
   profileId: string;
-  purchaseLogId: string;
 }) {
   const claimedAt = new Date().toISOString();
   const { data, error } = await supabase
@@ -575,7 +574,6 @@ export async function claimAmazonOrderIngestion(params: {
       claimed_team_id: params.teamId,
       claimed_by_profile_id: params.profileId,
       claimed_at: claimedAt,
-      purchase_log_id: params.purchaseLogId,
     })
     .eq("id", params.ingestionId)
     .eq("status", "pending_claim")
@@ -585,6 +583,15 @@ export async function claimAmazonOrderIngestion(params: {
     .maybeSingle();
   if (error) throw error;
   return data as AmazonOrderIngestion | null;
+}
+
+export async function attachAmazonPurchaseLog(params: { ingestionId: string; purchaseLogId: string }) {
+  const { error } = await supabase
+    .from("amazon_order_ingestions")
+    .update({ purchase_log_id: params.purchaseLogId })
+    .eq("id", params.ingestionId)
+    .eq("status", "claimed");
+  if (error) throw error;
 }
 
 export async function updateGmailAccountLinkTokens(params: {

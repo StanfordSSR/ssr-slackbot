@@ -8,6 +8,7 @@ import { decodeActionValue, decodeAmazonClaimValue, decodeAttachmentSelectValue,
 import { amazonClaimDecisionBlocks, receiptDecisionBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
+  attachAmazonPurchaseLog,
   claimAmazonOrderIngestion,
   createAmazonPurchaseLog,
   approveEmailReceiptIngestion,
@@ -232,18 +233,17 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
       return NextResponse.json({ text: "You can only claim Amazon purchases for teams you lead unless you're an admin.", replace_original: false });
     }
 
-    const purchaseId = crypto.randomUUID();
     const claimed = await claimAmazonOrderIngestion({
       ingestionId: decoded.ingestionId,
       teamId: decoded.teamId,
       profileId: profile.id,
-      purchaseLogId: purchaseId,
     });
 
     if (!claimed) {
       return NextResponse.json({ text: "That Amazon purchase was already claimed.", replace_original: false });
     }
 
+    const purchaseId = crypto.randomUUID();
     await createAmazonPurchaseLog({
       purchaseId,
       teamId: decoded.teamId,
@@ -252,6 +252,10 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
       itemName: ingestion.item_name || "Amazon order",
       amountTotal: ingestion.amount_total || 0,
       purchaseDate: ingestion.purchase_date,
+    });
+    await attachAmazonPurchaseLog({
+      ingestionId: decoded.ingestionId,
+      purchaseLogId: purchaseId,
     });
 
     await recordAuditEvent({
