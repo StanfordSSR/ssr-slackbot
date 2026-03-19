@@ -29,6 +29,13 @@ import { lookupSlackUserIdByEmail, postDirectMessageToUser } from "@/lib/slack";
 import { receiptReviewBlocks } from "@/lib/slack-blocks";
 import { GmailPendingReceiptPayload } from "@/types/receipt";
 
+export type GmailSyncResult = {
+  linkId: string;
+  unreadCount: number;
+  processed: number;
+  initialBackfill: boolean;
+};
+
 export async function buildSlackOAuthLink(params: {
   slackUserId: string;
   profileId: string;
@@ -48,7 +55,7 @@ export async function buildSlackOAuthLink(params: {
 
 export async function syncAllGmailLinks() {
   const links = await getActiveGmailAccountLinks();
-  const results = [];
+  const results: GmailSyncResult[] = [];
   for (const link of links) {
     results.push(await syncGmailLink(link));
   }
@@ -83,7 +90,12 @@ export async function syncGmailLink(link: GmailAccountLink) {
     }
 
     await markGmailScanCompleted(link.id, initialBackfill);
-    return { linkId: link.id, processed, initialBackfill };
+    return {
+      linkId: link.id,
+      unreadCount: messageIds.length,
+      processed,
+      initialBackfill,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("401") || message.includes("403") || message.includes("invalid_grant")) {

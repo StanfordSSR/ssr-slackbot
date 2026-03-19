@@ -45,13 +45,35 @@ export async function GET(request: Request) {
   const team = await getTeamById(parsed.teamId);
 
   after(async () => {
-    await postDirectMessageToUser(
-      parsed.slackUserId,
-      `Linked ${googleIdentity.email} to ${team?.name || "your team"}. I’ll start checking unread receipts now.`,
-    );
-    const freshLink = await getGmailAccountLinkById(link.id);
-    if (freshLink) {
-      await syncGmailLink(freshLink);
+    try {
+      await postDirectMessageToUser(
+        parsed.slackUserId,
+        `Link successful. ${googleIdentity.email} is now connected to ${team?.name || "your team"}.`,
+      );
+      await postDirectMessageToUser(
+        parsed.slackUserId,
+        "Scanning for unread emails now. I’ll message you again with what I find.",
+      );
+
+      const freshLink = await getGmailAccountLinkById(link.id);
+      if (freshLink) {
+        const result = await syncGmailLink(freshLink);
+        const windowLabel = result.initialBackfill ? "10 days" : "3 days";
+        const summary =
+          result.processed > 0
+            ? `Scan complete. I checked ${result.unreadCount} unread email(s) from the last ${windowLabel} and drafted ${result.processed} receipt review message(s) in Slack.`
+            : `Scan complete. I checked ${result.unreadCount} unread email(s) from the last ${windowLabel}, but none turned into receipt drafts.`;
+
+        await postDirectMessageToUser(parsed.slackUserId, summary);
+      } else {
+        await postDirectMessageToUser(parsed.slackUserId, "The Gmail link saved, but I couldn't reload it for the first scan.");
+      }
+    } catch (error) {
+      console.error("Failed to run initial Gmail sync after linking", error);
+      await postDirectMessageToUser(
+        parsed.slackUserId,
+        "The Gmail link worked, but the first inbox scan hit a snag. Try again shortly or ask me to add a manual re-scan command.",
+      );
     }
   });
 
