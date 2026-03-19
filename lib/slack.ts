@@ -65,17 +65,29 @@ export async function updateMessage(channel: string, ts: string, text: string, b
 }
 
 export async function postDelayedSlackResponse(responseUrl: string, text: string, blocks?: unknown[]) {
+  return postSlackResponse(responseUrl, {
+    response_type: "ephemeral",
+    replace_original: false,
+    text,
+    blocks,
+  });
+}
+
+export async function postSlackResponse(
+  responseUrl: string,
+  payload: {
+    text?: string;
+    blocks?: unknown[];
+    replace_original?: boolean;
+    response_type?: "ephemeral" | "in_channel";
+  },
+) {
   const response = await fetch(responseUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json; charset=utf-8",
     },
-    body: JSON.stringify({
-      response_type: "ephemeral",
-      replace_original: false,
-      text,
-      blocks,
-    }),
+    body: JSON.stringify(payload),
     cache: "no-store",
   });
 

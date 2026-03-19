@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { parse } from "node:querystring";
 import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
@@ -23,6 +23,7 @@ import {
   downloadSlackFile,
   fetchFileInfo,
   getSlackUserIdentity,
+  postSlackResponse,
   postDirectMessageToUser,
   postDm,
 } from "@/lib/slack";
@@ -34,6 +35,7 @@ export const dynamic = "force-dynamic";
 type ActionPayload = {
   user: { id: string };
   channel?: { id: string };
+  response_url?: string;
   actions?: Array<{ action_id: string; value?: string; selected_option?: { value?: string } }>;
 };
 
@@ -268,79 +270,119 @@ Amount: ${current.extraction.amount_total ?? "unknown"}`,
   if (action.action_id === "select_email_attachment") {
     if (!channel) return NextResponse.json({ ok: true });
     const decoded = decodeAttachmentSelectValue(actionValue);
+    const responseUrl = payload.response_url;
 
-    const identity = await getSlackUserIdentity(payload.user.id);
-    const profile = await findProfileByEmail(identity.email);
-    if (!profile) {
-      await postDm(channel, `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`);
-      return NextResponse.json({ text: "Missing HQ profile match.", replace_original: false });
+    if (!responseUrl) {
+      return NextResponse.json({ text: "Slack did not include a response URL for this selection.", replace_original: false });
     }
 
-    const current = await getEmailReceiptIngestionById(decoded.ingestionId);
-    if (!current) {
-      return NextResponse.json({ text: "That email receipt was not found.", replace_original: false });
-    }
+    after(async () => {
+      try {
+        const identity = await getSlackUserIdentity(payload.user.id);
+        const profile = await findProfileByEmail(identity.email);
+        if (!profile) {
+          await postSlackResponse(responseUrl, {
+            text: `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`,
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
-    const leadTeams = await getLeadTeamsForUser(profile.id);
-    const authorized = leadTeams.some((team) => team.id === current.team_id);
-    if (!authorized) {
-      await postDm(channel, "You are no longer authorized to review receipts for that team.");
-      return NextResponse.json({ text: "Not authorized.", replace_original: false });
-    }
+        const current = await getEmailReceiptIngestionById(decoded.ingestionId);
+        if (!current) {
+          await postSlackResponse(responseUrl, {
+            text: "That email receipt was not found.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
-    const link = await getGmailAccountLinkById(current.gmail_link_id);
-    if (!link) {
-      return NextResponse.json({ text: "That Gmail link is no longer active.", replace_original: false });
-    }
+        const leadTeams = await getLeadTeamsForUser(profile.id);
+        const authorized = leadTeams.some((team) => team.id === current.team_id);
+        if (!authorized) {
+          await postSlackResponse(responseUrl, {
+            text: "You are no longer authorized to review receipts for that team.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
-    const { attachments } = await getSupportedEmailAttachments(link, current.gmail_message_id);
-    const rebuilt = await rebuildEmailIngestionAttachment({
-      link,
-      teamId: current.team_id,
-      messageId: current.gmail_message_id,
-      attachmentPartId: decoded.attachmentPartId,
+        const link = await getGmailAccountLinkById(current.gmail_link_id);
+        if (!link) {
+          await postSlackResponse(responseUrl, {
+            text: "That Gmail link is no longer active.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
+
+        const { attachments } = await getSupportedEmailAttachments(link, current.gmail_message_id);
+        const rebuilt = await rebuildEmailIngestionAttachment({
+          link,
+          teamId: current.team_id,
+          messageId: current.gmail_message_id,
+          attachmentPartId: decoded.attachmentPartId,
+        });
+
+        if (rebuilt.extraction.confidence < 0.5) {
+          const selectedFilename =
+            attachments.find((attachment) => attachment.partId === decoded.attachmentPartId)?.filename || "that attachment";
+          await postSlackResponse(responseUrl, {
+            text: `Skipped *${selectedFilename}* because the extracted confidence was under 50%. Pick another file if you want.`,
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
+
+        await updateEmailReceiptIngestionDraft({
+          ingestionId: current.id,
+          artifactSource: rebuilt.artifactSource,
+          artifactFilename: rebuilt.artifactFilename,
+          artifactMimeType: rebuilt.artifactMimeType,
+          artifactStoragePath: rebuilt.artifactStoragePath,
+          extraction: rebuilt.extraction,
+        });
+
+        const updatedPayload: GmailPendingReceiptPayload = {
+          source: "gmail",
+          ingestionId: current.id,
+          teamId: current.team_id,
+          teamName: current.teamName,
+          filename: rebuilt.artifactFilename,
+          mimeType: rebuilt.artifactMimeType,
+          artifactSource: rebuilt.artifactSource,
+          senderEmail: current.sender_email,
+          subject: current.subject,
+          extraction: rebuilt.extraction,
+          selectedAttachmentPartId: decoded.attachmentPartId,
+          attachmentOptions: attachments.map((attachment) => ({
+            partId: attachment.partId,
+            filename: attachment.filename,
+          })),
+        };
+
+        await postSlackResponse(responseUrl, {
+          text: `Updated draft to use ${rebuilt.artifactFilename}.`,
+          replace_original: true,
+          blocks: receiptReviewBlocks({ teamName: current.teamName, payload: updatedPayload }),
+        });
+      } catch (error) {
+        await postSlackResponse(responseUrl, {
+          text: `Attachment update failed: ${error instanceof Error ? error.message : String(error)}`,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      }
     });
-
-    if (rebuilt.extraction.confidence < 0.5) {
-      const selectedFilename =
-        attachments.find((attachment) => attachment.partId === decoded.attachmentPartId)?.filename || "that attachment";
-      return NextResponse.json({
-        text: `Skipped *${selectedFilename}* because the extracted confidence was under 50%. Pick another file if you want.`,
-        replace_original: false,
-      });
-    }
-
-    await updateEmailReceiptIngestionDraft({
-      ingestionId: current.id,
-      artifactSource: rebuilt.artifactSource,
-      artifactFilename: rebuilt.artifactFilename,
-      artifactMimeType: rebuilt.artifactMimeType,
-      artifactStoragePath: rebuilt.artifactStoragePath,
-      extraction: rebuilt.extraction,
-    });
-
-    const updatedPayload: GmailPendingReceiptPayload = {
-      source: "gmail",
-      ingestionId: current.id,
-      teamId: current.team_id,
-      teamName: current.teamName,
-      filename: rebuilt.artifactFilename,
-      mimeType: rebuilt.artifactMimeType,
-      artifactSource: rebuilt.artifactSource,
-      senderEmail: current.sender_email,
-      subject: current.subject,
-      extraction: rebuilt.extraction,
-      selectedAttachmentPartId: decoded.attachmentPartId,
-      attachmentOptions: attachments.map((attachment) => ({
-        partId: attachment.partId,
-        filename: attachment.filename,
-      })),
-    };
 
     return NextResponse.json({
-      text: `Updated draft to use ${rebuilt.artifactFilename}.`,
-      replace_original: true,
-      blocks: receiptReviewBlocks({ teamName: current.teamName, payload: updatedPayload }),
+      text: "Updating receipt draft...",
+      replace_original: false,
     });
   }
 
