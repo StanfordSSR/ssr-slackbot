@@ -24,6 +24,26 @@ async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return json;
 }
 
+async function slackFormFetch<T>(path: string, body: URLSearchParams) {
+  const token = getEnv("SLACK_BOT_TOKEN");
+  const response = await fetch(`${slackApiBase}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+    cache: "no-store",
+  });
+
+  const json = (await response.json()) as T & { ok?: boolean; error?: string };
+  if ((json as { ok?: boolean }).ok === false) {
+    throw new Error(`Slack API error on ${path}: ${(json as { error?: string }).error ?? "unknown_error"}`);
+  }
+
+  return json;
+}
+
 export async function postMessage(channel: string, text: string, blocks?: unknown[], threadTs?: string) {
   return slackFetch("/chat.postMessage", {
     method: "POST",
@@ -50,6 +70,30 @@ export async function fetchConversationHistory(channel: string, limit = 15) {
       bot_id?: string;
     }>;
   }>(`/conversations.history?channel=${encodeURIComponent(channel)}&limit=${encodeURIComponent(String(limit))}`);
+}
+
+export async function openDirectMessage(userId: string) {
+  const result = await slackFormFetch<{ ok: true; channel: { id: string } }>(
+    "/conversations.open",
+    new URLSearchParams({ users: userId }),
+  );
+  return result.channel.id;
+}
+
+export async function postDirectMessageToUser(userId: string, text: string, blocks?: unknown[]) {
+  const channel = await openDirectMessage(userId);
+  return postMessage(channel, text, blocks);
+}
+
+export async function lookupSlackUserIdByEmail(email: string) {
+  const result = await slackFetch<{
+    ok: true;
+    user: {
+      id: string;
+    };
+  }>(`/users.lookupByEmail?email=${encodeURIComponent(email)}`);
+
+  return result.user.id;
 }
 
 export async function downloadSlackFile(url: string) {
