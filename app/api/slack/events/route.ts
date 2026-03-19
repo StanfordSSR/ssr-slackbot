@@ -8,6 +8,7 @@ import {
   getSlackUserIdentity,
   postDm,
   postMessage,
+  updateMessage,
 } from "@/lib/slack";
 import { isSupportedReceiptMimeType, toDataUrl, compactExtractionForSlack } from "@/lib/receipt-utils";
 import { answerSlackMention, extractReceiptFromImage } from "@/lib/openai";
@@ -240,8 +241,9 @@ async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event
     channel,
     hasContext: context.length > 0,
   });
+  const pendingMessage = await postMessage(channel, "_thinking..._");
   const reply = await answerSlackMention({ prompt, history: context });
-  await postMessage(channel, reply);
+  await updateMessage(channel, pendingMessage.ts, reply);
 }
 
 function cleanMentionText(text?: string) {

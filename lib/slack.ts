@@ -24,10 +24,23 @@ async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return json;
 }
 
+type PostMessageResponse = {
+  ok: true;
+  channel: string;
+  ts: string;
+};
+
 export async function postMessage(channel: string, text: string, blocks?: unknown[], threadTs?: string) {
-  return slackFetch("/chat.postMessage", {
+  return slackFetch<PostMessageResponse>("/chat.postMessage", {
     method: "POST",
     body: JSON.stringify({ channel, text, blocks, thread_ts: threadTs }),
+  });
+}
+
+export async function updateMessage(channel: string, ts: string, text: string, blocks?: unknown[]) {
+  return slackFetch<PostMessageResponse>("/chat.update", {
+    method: "POST",
+    body: JSON.stringify({ channel, ts, text, blocks }),
   });
 }
 
