@@ -92,8 +92,7 @@ export async function POST(request: Request) {
           mode === "dm_receipt"
             ? "I hit a snag while reading that receipt. Try again with a clearer image or PDF."
             : "My circuits got a little tangled on that one. Please try again in a sec.";
-        const threadTs = mode === "channel_mention" ? event.thread_ts || event.ts : undefined;
-        await postMessage(event.channel, fallback, undefined, threadTs);
+        await postMessage(event.channel, fallback);
       }
     }
   });
@@ -199,19 +198,18 @@ async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]
 
 async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event"]>) {
   const channel = event.channel;
-  const ts = event.thread_ts || event.ts;
 
-  if (!channel || !ts) return;
+  if (!channel) return;
 
   const prompt = cleanMentionText(event.text);
   if (!prompt) {
-    await postMessage(channel, "Hai! Ask me anything about SSR HQ, receipts, or robotics and I’ll do my sparkly best to help.", undefined, ts);
+    await postMessage(channel, "Hai! Ask me anything about SSR HQ, receipts, or robotics and I’ll do my sparkly best to help.");
     return;
   }
 
   console.info("Handling Slack channel mention", {
     channel,
-    ts,
+    ts: event.thread_ts || event.ts,
     promptPreview: prompt.slice(0, 160),
   });
 
@@ -243,7 +241,7 @@ async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event
     hasContext: context.length > 0,
   });
   const reply = await answerSlackMention({ prompt, history: context });
-  await postMessage(channel, reply, undefined, ts);
+  await postMessage(channel, reply);
 }
 
 function cleanMentionText(text?: string) {
