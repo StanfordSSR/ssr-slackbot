@@ -195,13 +195,19 @@ export function amazonClaimBlocks(params: {
   ];
 }
 
-export function amazonClaimDecisionBlocks(params: { teamName: string }) {
+export function amazonClaimDecisionBlocks(params: {
+  teamName: string;
+  itemName: string;
+  amountTotal: number;
+  currency: string | null;
+}) {
+  const safeItemName = params.itemName.replace(/\s+/g, " ").trim().slice(0, 120) || "Amazon order";
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Amazon Purchase Claim*\nClaimed by ${params.teamName}`,
+        text: `*Amazon Purchase Claim*\n${safeItemName} - ${prettyCurrency(params.amountTotal, params.currency)}\nClaimed by ${params.teamName}`,
       },
     },
     {

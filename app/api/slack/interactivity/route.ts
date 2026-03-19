@@ -315,7 +315,12 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
         await postSlackResponse(responseUrl, {
           text: `Claimed by ${team.name}`,
           replace_original: true,
-          blocks: amazonClaimDecisionBlocks({ teamName: team.name }),
+          blocks: amazonClaimDecisionBlocks({
+            teamName: team.name,
+            itemName: ingestion.item_name || "Amazon order",
+            amountTotal: ingestion.amount_total || 0,
+            currency: ingestion.currency,
+          }),
         });
       } catch (error) {
         await postSlackResponse(responseUrl, {
