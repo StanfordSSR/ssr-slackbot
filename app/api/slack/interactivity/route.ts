@@ -4,7 +4,7 @@ import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
 import { recordAuditEvent } from "@/lib/audit";
-import { decodeActionValue, decodeAttachmentSelectValue, isAmazonClaimPayload, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
+import { decodeActionValue, decodeAmazonClaimValue, decodeAttachmentSelectValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
 import { amazonClaimDecisionBlocks, receiptDecisionBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
@@ -208,10 +208,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
   }
 
   if (action.action_id === "claim_amazon_order") {
-    const decoded = decodeActionValue(actionValue);
-    if (!isAmazonClaimPayload(decoded)) {
-      return NextResponse.json({ text: "That Amazon claim payload was invalid.", replace_original: false });
-    }
+    const decoded = decodeAmazonClaimValue(actionValue);
 
     const identity = await getSlackUserIdentity(payload.user.id);
     const profile = await findProfileByEmail(identity.email);
@@ -219,8 +216,18 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
       return NextResponse.json({ text: "Missing HQ profile match.", replace_original: false });
     }
 
+    const ingestion = await getAmazonOrderIngestionById(decoded.ingestionId);
+    if (!ingestion) {
+      return NextResponse.json({ text: "That Amazon purchase was not found.", replace_original: false });
+    }
+
+    const team = await getTeamById(decoded.teamId);
+    if (!team) {
+      return NextResponse.json({ text: "That team was not found.", replace_original: false });
+    }
+
     const leadTeams = await getLeadTeamsForUser(profile.id);
-    const canClaim = Boolean(profile.is_admin) || leadTeams.some((team) => team.id === decoded.teamId);
+    const canClaim = Boolean(profile.is_admin) || leadTeams.some((leadTeam) => leadTeam.id === decoded.teamId);
     if (!canClaim) {
       return NextResponse.json({ text: "You can only claim Amazon purchases for teams you lead unless you're an admin.", replace_original: false });
     }
@@ -242,9 +249,9 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
       teamId: decoded.teamId,
       profileId: profile.id,
       personName: profile.full_name || identity.realName || identity.displayName,
-      itemName: decoded.itemName,
-      amountTotal: decoded.amountTotal,
-      purchaseDate: decoded.purchaseDate,
+      itemName: ingestion.item_name || "Amazon order",
+      amountTotal: ingestion.amount_total || 0,
+      purchaseDate: ingestion.purchase_date,
     });
 
     await recordAuditEvent({
@@ -252,17 +259,17 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
       action: "purchase.added",
       targetType: "amazon_order_ingestion",
       targetId: decoded.ingestionId,
-      summary: `Bot added Amazon purchase for ${decoded.teamName} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"}.`,
+      summary: `Bot added Amazon purchase for ${team.name} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"}.`,
       details: {
         source: "amazon",
         teamId: decoded.teamId,
-        teamName: decoded.teamName,
+        teamName: team.name,
         purchaseId,
         ingestionId: decoded.ingestionId,
-        itemName: decoded.itemName,
-        amountTotal: decoded.amountTotal,
-        currency: decoded.currency,
-        purchaseDate: decoded.purchaseDate,
+        itemName: ingestion.item_name,
+        amountTotal: ingestion.amount_total,
+        currency: ingestion.currency,
+        purchaseDate: ingestion.purchase_date,
         slackUserId: payload.user.id,
         actorName: profile.full_name || identity.realName || identity.displayName,
         automated: true,
@@ -270,9 +277,9 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
     });
 
     return NextResponse.json({
-      text: `Claimed by ${decoded.teamName}`,
+      text: `Claimed by ${team.name}`,
       replace_original: true,
-      blocks: amazonClaimDecisionBlocks({ teamName: decoded.teamName }),
+      blocks: amazonClaimDecisionBlocks({ teamName: team.name }),
     });
   }
 

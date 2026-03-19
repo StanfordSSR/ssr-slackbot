@@ -80,3 +80,19 @@ export function decodeAttachmentSelectValue(value: string) {
     attachmentPartId: value.slice(separatorIndex + 1),
   };
 }
+
+export function encodeAmazonClaimValue(ingestionId: string, teamId: string) {
+  return `${ingestionId}:${teamId}`;
+}
+
+export function decodeAmazonClaimValue(value: string) {
+  const separatorIndex = value.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    throw new Error("Invalid Amazon claim value.");
+  }
+
+  return {
+    ingestionId: value.slice(0, separatorIndex),
+    teamId: value.slice(separatorIndex + 1),
+  };
+}

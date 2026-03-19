@@ -1,5 +1,5 @@
 import { GmailAttachmentChoicePayload, LeadTeam, ReceiptPendingPayload, ReceiptExtraction } from "@/types/receipt";
-import { encodeActionValue, encodeAttachmentSelectValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
+import { encodeActionValue, encodeAmazonClaimValue, encodeAttachmentSelectValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
 
 export function receiptReviewBlocks(params: { teamName: string; payload: ReceiptPendingPayload }) {
   const { teamName, payload } = params;
@@ -182,16 +182,7 @@ export function amazonClaimBlocks(params: {
         type: "button",
         text: { type: "plain_text", text: team.name.slice(0, 75) },
         action_id: "claim_amazon_order",
-        value: encodeActionValue({
-          source: "amazon_order_claim",
-          ingestionId: params.ingestionId,
-          teamId: team.id,
-          teamName: team.name,
-          itemName: params.itemName,
-          amountTotal: params.amountTotal,
-          currency: params.currency,
-          purchaseDate: params.purchaseDate,
-        }),
+        value: encodeAmazonClaimValue(params.ingestionId, team.id),
       })),
     })),
   ];
