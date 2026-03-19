@@ -24,15 +24,32 @@ async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return json;
 }
 
-export async function postDm(channel: string, text: string, blocks?: unknown[]) {
+export async function postMessage(channel: string, text: string, blocks?: unknown[], threadTs?: string) {
   return slackFetch("/chat.postMessage", {
     method: "POST",
-    body: JSON.stringify({ channel, text, blocks }),
+    body: JSON.stringify({ channel, text, blocks, thread_ts: threadTs }),
   });
+}
+
+export async function postDm(channel: string, text: string, blocks?: unknown[]) {
+  return postMessage(channel, text, blocks);
 }
 
 export async function fetchFileInfo(fileId: string) {
   return slackFetch<{ ok: true; file: Record<string, unknown> }>(`/files.info?file=${encodeURIComponent(fileId)}`);
+}
+
+export async function fetchConversationHistory(channel: string, limit = 15) {
+  return slackFetch<{
+    ok: true;
+    messages: Array<{
+      user?: string;
+      text?: string;
+      ts?: string;
+      subtype?: string;
+      bot_id?: string;
+    }>;
+  }>(`/conversations.history?channel=${encodeURIComponent(channel)}&limit=${encodeURIComponent(String(limit))}`);
 }
 
 export async function downloadSlackFile(url: string) {

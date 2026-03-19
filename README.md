@@ -50,6 +50,8 @@ on public.teams (is_active);
 ## Slack app scopes
 
 Use these bot scopes:
+- `app_mentions:read`
+- `channels:history`
 - `chat:write`
 - `files:read`
 - `im:history`
@@ -61,6 +63,7 @@ Use these bot scopes:
 - Events request URL: `https://YOUR_DOMAIN/api/slack/events`
 - Interactivity request URL: `https://YOUR_DOMAIN/api/slack/interactivity`
 - Subscribe to bot event: `message.im`
+- Subscribe to bot event: `app_mention`
 
 `/api/slack/commands` is still present, but only replies with a short note that the bot is email-based now.
 

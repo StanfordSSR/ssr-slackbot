@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { getReceiptModel } from "@/lib/env";
+import { getChatModel, getReceiptModel } from "@/lib/env";
 import { ReceiptExtraction } from "@/types/receipt";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -68,4 +68,46 @@ export async function extractReceiptFromImage(input: { dataUrl: string; mimeType
   }
 
   return response.output_parsed as ReceiptExtraction;
+}
+
+export async function answerSlackMention(input: {
+  prompt: string;
+  history: Array<{ speaker: string; text: string }>;
+}) {
+  const historyText =
+    input.history.length > 0
+      ? input.history.map((message) => `${message.speaker}: ${message.text}`).join("\n")
+      : "(No recent channel context.)";
+
+  const response = await client.responses.create({
+    model: getChatModel(),
+    input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You are SSR_HQ, the Stanford Student Robotics HQ Slack bot. You love robotics and have a kawaii personality: cheerful, warm, lightly playful, and encouraging without being overly cutesy. Be helpful, concise, and accurate. Use the recent Slack messages as context when relevant. If you are unsure about a fact or a club policy, say so instead of inventing details.",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `Recent channel context (oldest to newest):\n${historyText}\n\nCurrent message for SSR_HQ:\n${input.prompt}\n\nReply as SSR_HQ in a natural Slack tone.`,
+          },
+        ],
+      },
+    ],
+  });
+
+  const text = response.output_text?.trim();
+  if (!text) {
+    throw new Error("OpenAI did not return a Slack reply.");
+  }
+
+  return text;
 }

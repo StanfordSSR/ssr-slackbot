@@ -1,9 +1,16 @@
 import { after, NextResponse } from "next/server";
 import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
-import { fetchFileInfo, downloadSlackFile, getSlackUserIdentity, postDm } from "@/lib/slack";
+import {
+  downloadSlackFile,
+  fetchConversationHistory,
+  fetchFileInfo,
+  getSlackUserIdentity,
+  postDm,
+  postMessage,
+} from "@/lib/slack";
 import { isSupportedReceiptMimeType, toDataUrl, compactExtractionForSlack } from "@/lib/receipt-utils";
-import { extractReceiptFromImage } from "@/lib/openai";
+import { answerSlackMention, extractReceiptFromImage } from "@/lib/openai";
 import { receiptReviewBlocks, teamChoiceBlocks } from "@/lib/slack-blocks";
 import { findProfileByEmail, getLeadTeamsForUser } from "@/lib/supabase";
 
@@ -19,17 +26,21 @@ type SlackEventEnvelope = {
     user?: string;
     channel?: string;
     channel_type?: string;
+    text?: string;
+    ts?: string;
+    thread_ts?: string;
     bot_id?: string;
     files?: Array<{ id: string; mimetype?: string; name?: string }>;
   };
 };
 
-function isProcessableDirectMessageEvent(event: NonNullable<SlackEventEnvelope["event"]>) {
-  if (event.type !== "message") return false;
+function getSlackEventMode(event: NonNullable<SlackEventEnvelope["event"]>) {
   if (event.bot_id) return false;
+  if (event.type === "app_mention") return "channel_mention" as const;
+  if (event.type !== "message") return false;
   if (event.channel_type !== "im") return false;
-  if (!event.subtype) return true;
-  return event.subtype === "file_share";
+  if (!event.subtype || event.subtype === "file_share") return "dm_receipt" as const;
+  return false;
 }
 
 export async function POST(request: Request) {
@@ -52,27 +63,37 @@ export async function POST(request: Request) {
   }
 
   const event = body.event;
-  const accepted = isProcessableDirectMessageEvent(event);
+  const mode = getSlackEventMode(event);
   console.info("Slack event received", {
     eventType: event.type,
     subtype: event.subtype ?? null,
     channelType: event.channel_type ?? null,
     hasFiles: Boolean(event.files?.length),
     fileCount: event.files?.length ?? 0,
-    accepted,
+    mode,
   });
 
-  if (!accepted) {
+  if (!mode) {
     return NextResponse.json({ ok: true });
   }
 
   after(async () => {
     try {
-      await handleMessageEvent(event);
+      if (mode === "dm_receipt") {
+        await handleMessageEvent(event);
+        return;
+      }
+
+      await handleChannelMention(event);
     } catch (error) {
       console.error("Failed to handle Slack event", error);
       if (event.channel) {
-        await postDm(event.channel, "I hit a snag while reading that receipt. Try again with a clearer image or PDF.");
+        const fallback =
+          mode === "dm_receipt"
+            ? "I hit a snag while reading that receipt. Try again with a clearer image or PDF."
+            : "My circuits got a little tangled on that one. Please try again in a sec.";
+        const threadTs = mode === "channel_mention" ? event.thread_ts || event.ts : undefined;
+        await postMessage(event.channel, fallback, undefined, threadTs);
       }
     }
   });
@@ -174,4 +195,43 @@ async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]
     "I found multiple teams you lead.",
     teamChoiceBlocks({ teams, extraction, fileId: slackFile.id, filename, mimeType }),
   );
+}
+
+async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event"]>) {
+  const channel = event.channel;
+  const ts = event.thread_ts || event.ts;
+
+  if (!channel || !ts) return;
+
+  const prompt = cleanMentionText(event.text);
+  if (!prompt) {
+    await postMessage(channel, "Hai! Ask me anything about SSR HQ, receipts, or robotics and I’ll do my sparkly best to help.", undefined, ts);
+    return;
+  }
+
+  console.info("Handling Slack channel mention", {
+    channel,
+    ts,
+    promptPreview: prompt.slice(0, 160),
+  });
+
+  const history = await fetchConversationHistory(channel, 15);
+  const context = (history.messages ?? [])
+    .filter((message) => !message.subtype)
+    .reverse()
+    .map((message) => ({
+      speaker: message.user ? `<@${message.user}>` : message.bot_id ? "bot" : "unknown",
+      text: cleanMentionText(message.text).slice(0, 500),
+    }))
+    .filter((message) => message.text);
+
+  const reply = await answerSlackMention({ prompt, history: context });
+  await postMessage(channel, reply, undefined, ts);
+}
+
+function cleanMentionText(text?: string) {
+  return (text || "")
+    .replace(/<@[A-Z0-9]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
