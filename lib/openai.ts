@@ -17,6 +17,19 @@ const receiptSchema = z.object({
 });
 
 export async function extractReceiptFromImage(input: { dataUrl: string; mimeType: string; filename: string }): Promise<ReceiptExtraction> {
+  const fileContent =
+    input.mimeType === "application/pdf"
+      ? {
+          type: "input_file" as const,
+          file_data: input.dataUrl,
+          filename: input.filename,
+        }
+      : {
+          type: "input_image" as const,
+          image_url: input.dataUrl,
+          detail: "auto" as const,
+        };
+
   const response = await client.responses.parse({
     model: getReceiptModel(),
     input: [
@@ -37,11 +50,7 @@ export async function extractReceiptFromImage(input: { dataUrl: string; mimeType
             type: "input_text",
             text: `Extract the key fields from this receipt image or document preview. Filename: ${input.filename}`,
           },
-          {
-            type: "input_image",
-            image_url: input.dataUrl,
-            detail: "auto",
-          },
+          fileContent,
         ],
       },
     ],
