@@ -148,33 +148,15 @@ export function amazonClaimBlocks(params: {
   teams: LeadTeam[];
 }) {
   const teamRows = chunk(params.teams, 5);
+  const safeItemName = params.itemName.replace(/\s+/g, " ").trim().slice(0, 180) || "Amazon order";
+  const summaryText = `*Amazon Purchase Claim*\n${safeItemName}\n${prettyCurrency(params.amountTotal, params.currency)}${params.purchaseDate ? ` • ${params.purchaseDate}` : ""}\nPlease claim this purchase for the correct team.`;
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "*Amazon Purchase Claim*",
+        text: summaryText,
       },
-    },
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: "Automated from the linked Amazon inbox. Please claim this purchase for the correct team.",
-        },
-      ],
-    },
-    {
-      type: "divider",
-    },
-    {
-      type: "section",
-      fields: [
-        { type: "mrkdwn", text: `*Item*\n${params.itemName}` },
-        { type: "mrkdwn", text: `*Total*\n${prettyCurrency(params.amountTotal, params.currency)}` },
-        { type: "mrkdwn", text: `*Date*\n${params.purchaseDate || "Unknown"}` },
-      ],
     },
     ...teamRows.map((teams) => ({
       type: "actions",
