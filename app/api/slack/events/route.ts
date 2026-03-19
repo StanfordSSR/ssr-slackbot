@@ -1,0 +1,145 @@
+import { NextResponse } from "next/server";
+import { verifySlackSignature } from "@/lib/slack-signature";
+import { getEnv } from "@/lib/env";
+import { fetchFileInfo, downloadSlackFile, getSlackUserIdentity, postDm } from "@/lib/slack";
+import { isSupportedReceiptMimeType, toDataUrl, compactExtractionForSlack } from "@/lib/receipt-utils";
+import { extractReceiptFromImage } from "@/lib/openai";
+import { receiptReviewBlocks, teamChoiceBlocks } from "@/lib/slack-blocks";
+import { findProfileByEmail, getLeadTeamsForUser } from "@/lib/supabase";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+type SlackEventEnvelope = {
+  type: string;
+  challenge?: string;
+  event?: {
+    type: string;
+    subtype?: string;
+    user?: string;
+    channel?: string;
+    channel_type?: string;
+    bot_id?: string;
+    files?: Array<{ id: string; mimetype?: string; name?: string }>;
+  };
+};
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const signingSecret = getEnv("SLACK_SIGNING_SECRET")!;
+  const isValid = await verifySlackSignature(request, rawBody, signingSecret);
+
+  if (!isValid) {
+    return NextResponse.json({ error: "invalid_signature" }, { status: 401 });
+  }
+
+  const body = JSON.parse(rawBody) as SlackEventEnvelope;
+
+  if (body.type === "url_verification") {
+    return NextResponse.json({ challenge: body.challenge });
+  }
+
+  if (body.type !== "event_callback" || !body.event) {
+    return NextResponse.json({ ok: true });
+  }
+
+  const event = body.event;
+  if (event.type !== "message" || event.subtype || event.bot_id || event.channel_type !== "im") {
+    return NextResponse.json({ ok: true });
+  }
+
+  void handleMessageEvent(event).catch(async (error) => {
+    console.error("Failed to handle Slack event", error);
+    if (event.channel) {
+      await postDm(event.channel, "I hit a snag while reading that receipt. Try again with a clearer image or PDF.");
+    }
+  });
+
+  return NextResponse.json({ ok: true });
+}
+
+async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]>) {
+  const userId = event.user;
+  const channel = event.channel;
+  const file = event.files?.[0];
+
+  if (!userId || !channel) return;
+
+  if (!file?.id) {
+    await postDm(channel, "Send me a receipt image or PDF and I’ll try to log it to your team.");
+    return;
+  }
+
+  const identity = await getSlackUserIdentity(userId);
+  const profile = await findProfileByEmail(identity.email);
+
+  if (!profile) {
+    await postDm(
+      channel,
+      `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile. Add that email to public.profiles.email first.`,
+    );
+    return;
+  }
+
+  const teams = await getLeadTeamsForUser(profile.id);
+  if (teams.length === 0) {
+    await postDm(channel, "You aren't authorized to submit receipts for any active team lead role.");
+    return;
+  }
+
+  const fileInfo = await fetchFileInfo(file.id);
+  const slackFile = fileInfo.file as {
+    id: string;
+    mimetype?: string;
+    name?: string;
+    url_private_download?: string;
+  };
+
+  const mimeType = slackFile.mimetype || file.mimetype || "application/octet-stream";
+  if (!isSupportedReceiptMimeType(mimeType)) {
+    await postDm(channel, "I can currently read JPEG, PNG, WEBP, and PDF receipts.");
+    return;
+  }
+
+  if (!slackFile.url_private_download) {
+    await postDm(channel, "Slack did not provide a downloadable file URL for that upload.");
+    return;
+  }
+
+  await postDm(channel, "Reading your receipt...");
+
+  const fileBytes = await downloadSlackFile(slackFile.url_private_download);
+  const extraction = compactExtractionForSlack(
+    await extractReceiptFromImage({
+      dataUrl: toDataUrl(fileBytes.arrayBuffer, mimeType),
+      mimeType,
+      filename: slackFile.name || file.name || "receipt",
+    }),
+  );
+
+  const filename = slackFile.name || file.name || "receipt";
+
+  if (teams.length === 1) {
+    const payload = {
+      teamId: teams[0].id,
+      teamName: teams[0].name,
+      fileId: slackFile.id,
+      filename,
+      mimeType,
+      extraction,
+    };
+
+    await postDm(
+      channel,
+      `Here’s the draft I extracted for *${teams[0].name}*.`,
+      receiptReviewBlocks({ teamName: teams[0].name, payload }),
+    );
+    return;
+  }
+
+  await postDm(
+    channel,
+    "I found multiple teams you lead.",
+    teamChoiceBlocks({ teams, extraction, fileId: slackFile.id, filename, mimeType }),
+  );
+}

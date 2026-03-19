@@ -1,0 +1,79 @@
+import { getEnv } from "@/lib/env";
+import { SlackUserIdentity } from "@/types/receipt";
+
+const slackApiBase = "https://slack.com/api";
+
+async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getEnv("SLACK_BOT_TOKEN");
+  const response = await fetch(`${slackApiBase}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
+    cache: "no-store",
+  });
+
+  const json = (await response.json()) as T & { ok?: boolean; error?: string };
+
+  if ((json as { ok?: boolean }).ok === false) {
+    throw new Error(`Slack API error on ${path}: ${(json as { error?: string }).error ?? "unknown_error"}`);
+  }
+
+  return json;
+}
+
+export async function postDm(channel: string, text: string, blocks?: unknown[]) {
+  return slackFetch("/chat.postMessage", {
+    method: "POST",
+    body: JSON.stringify({ channel, text, blocks }),
+  });
+}
+
+export async function fetchFileInfo(fileId: string) {
+  return slackFetch<{ ok: true; file: Record<string, unknown> }>(`/files.info?file=${encodeURIComponent(fileId)}`);
+}
+
+export async function downloadSlackFile(url: string) {
+  const token = getEnv("SLACK_BOT_TOKEN");
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Could not download Slack file: ${response.status}`);
+  }
+
+  return {
+    arrayBuffer: await response.arrayBuffer(),
+    contentType: response.headers.get("content-type") || "application/octet-stream",
+  };
+}
+
+export async function getSlackUserIdentity(userId: string): Promise<SlackUserIdentity> {
+  const result = await slackFetch<{
+    ok: true;
+    user: {
+      id: string;
+      profile?: { email?: string; display_name?: string; real_name?: string };
+      real_name?: string;
+      name?: string;
+    };
+  }>(`/users.info?user=${encodeURIComponent(userId)}`);
+
+  const email = result.user.profile?.email?.trim().toLowerCase();
+  if (!email) {
+    throw new Error("Slack did not return an email for this user. Check users:read and users:read.email scopes.");
+  }
+
+  return {
+    slackUserId: result.user.id,
+    email,
+    displayName: result.user.profile?.display_name || result.user.name || null,
+    realName: result.user.profile?.real_name || result.user.real_name || null,
+  };
+}
