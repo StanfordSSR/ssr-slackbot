@@ -59,6 +59,7 @@ Use these bot scopes:
 - `chat:write`
 - `files:read`
 - `im:history`
+- `im:write`
 - `users:read`
 - `users:read.email`
 

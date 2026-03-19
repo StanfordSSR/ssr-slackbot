@@ -46,11 +46,11 @@ export async function GET(request: Request) {
 
   after(async () => {
     try {
-      await postDirectMessageToUser(
+      await notifySlackUser(
         parsed.slackUserId,
         `Link successful. ${googleIdentity.email} is now connected to ${team?.name || "your team"}.`,
       );
-      await postDirectMessageToUser(
+      await notifySlackUser(
         parsed.slackUserId,
         "Scanning for unread emails now. I’ll message you again with what I find.",
       );
@@ -64,15 +64,18 @@ export async function GET(request: Request) {
             ? `Scan complete. I checked ${result.unreadCount} unread email(s) from the last ${windowLabel} and drafted ${result.processed} receipt review message(s) in Slack.`
             : `Scan complete. I checked ${result.unreadCount} unread email(s) from the last ${windowLabel}, but none turned into receipt drafts.`;
 
-        await postDirectMessageToUser(parsed.slackUserId, summary);
+        await notifySlackUser(parsed.slackUserId, summary);
       } else {
-        await postDirectMessageToUser(parsed.slackUserId, "The Gmail link saved, but I couldn't reload it for the first scan.");
+        await notifySlackUser(parsed.slackUserId, "The Gmail link saved, but I couldn't reload it for the first scan.");
       }
     } catch (error) {
       console.error("Failed to run initial Gmail sync after linking", error);
-      await postDirectMessageToUser(
+      const message = error instanceof Error ? error.message : String(error);
+      await notifySlackUser(
         parsed.slackUserId,
-        "The Gmail link worked, but the first inbox scan hit a snag. Try again shortly or ask me to add a manual re-scan command.",
+        message.includes("Gmail API request failed 403")
+          ? "The Gmail link worked, but Google blocked mailbox access. Most likely the Gmail API is not enabled for this Google project, the OAuth app is still in testing without your account added, or Gmail scopes were not fully granted."
+          : "The Gmail link worked, but the first inbox scan hit a snag. Try again shortly or ask me to add a manual re-scan command.",
       );
     }
   });
@@ -96,4 +99,15 @@ function escapeHtml(text: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+async function notifySlackUser(slackUserId: string, text: string) {
+  try {
+    await postDirectMessageToUser(slackUserId, text);
+  } catch (error) {
+    console.warn("Could not send Slack DM update after Gmail linking", {
+      slackUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

@@ -74,7 +74,9 @@ async function googleTokenRequest(body: URLSearchParams) {
   });
 
   if (!response.ok) {
-    throw new Error(`Google token exchange failed: ${response.status}`);
+    const details = await response.text();
+    const snippet = details.slice(0, 300);
+    throw new Error(`Google token exchange failed: ${response.status}${snippet ? `: ${snippet}` : ""}`);
   }
 
   return (await response.json()) as GoogleTokenResponse;

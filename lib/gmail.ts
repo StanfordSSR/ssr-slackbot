@@ -36,7 +36,9 @@ async function gmailFetch<T>(accessToken: string, path: string, init?: RequestIn
   });
 
   if (!response.ok) {
-    throw new Error(`Gmail API request failed ${response.status} for ${path}`);
+    const details = await response.text();
+    const snippet = details.slice(0, 300);
+    throw new Error(`Gmail API request failed ${response.status} for ${path}${snippet ? `: ${snippet}` : ""}`);
   }
 
   return (await response.json()) as T;
