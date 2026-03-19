@@ -6,6 +6,20 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
   const receipt = payload.extraction;
   const isGmail = isGmailPendingReceiptPayload(payload);
   const sourceLabel = isGmail ? (payload.artifactSource === "attachment" ? "Email attachment" : "Email PDF") : "Slack upload";
+  const summaryLines = [
+    `*Team:* ${teamName}  |  *Source:* ${sourceLabel}`,
+    `*Merchant:* ${receipt.merchant ?? "Unknown"}  |  *Amount:* ${prettyCurrency(receipt.amount_total, receipt.currency)}`,
+    `*Date:* ${receipt.purchase_date ?? "Unknown"}  |  *Item:* ${receipt.item_name ?? "Unknown"}`,
+    `*Category:* ${receipt.category}  |  *Payment:* ${receipt.payment_method}`,
+    `*Confidence:* ${Math.round(receipt.confidence * 100)}%`,
+  ];
+
+  if (isGmail) {
+    summaryLines.push(`*From:* ${payload.senderEmail ?? "Unknown"}`);
+    summaryLines.push(`*Subject:* ${payload.subject ?? "Unknown"}`);
+  }
+
+  summaryLines.push(`*Notes:* ${receipt.notes ?? "None"}`);
 
   return [
     {
@@ -17,34 +31,9 @@ export function receiptReviewBlocks(params: { teamName: string; payload: Pending
     },
     {
       type: "section",
-      fields: [
-        { type: "mrkdwn", text: `*Team*\n${teamName}` },
-        { type: "mrkdwn", text: `*Source*\n${sourceLabel}` },
-        { type: "mrkdwn", text: `*Merchant*\n${receipt.merchant ?? "Unknown"}` },
-        { type: "mrkdwn", text: `*Amount*\n${prettyCurrency(receipt.amount_total, receipt.currency)}` },
-        { type: "mrkdwn", text: `*Date*\n${receipt.purchase_date ?? "Unknown"}` },
-        { type: "mrkdwn", text: `*Item*\n${receipt.item_name ?? "Unknown"}` },
-        { type: "mrkdwn", text: `*Category*\n${receipt.category}` },
-        { type: "mrkdwn", text: `*Payment*\n${receipt.payment_method}` },
-        { type: "mrkdwn", text: `*Confidence*\n${Math.round(receipt.confidence * 100)}%` },
-      ],
-    },
-    ...(isGmail
-      ? [
-          {
-            type: "section",
-            fields: [
-              { type: "mrkdwn", text: `*From*\n${payload.senderEmail ?? "Unknown"}` },
-              { type: "mrkdwn", text: `*Subject*\n${payload.subject ?? "Unknown"}` },
-            ],
-          },
-        ]
-      : []),
-    {
-      type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Notes*\n${receipt.notes ?? "None"}`,
+        text: summaryLines.join("\n"),
       },
     },
     {

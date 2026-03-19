@@ -1,5 +1,3 @@
-import { htmlToPlainText, renderTextToPdf } from "@/lib/email-pdf";
-
 type GmailMessagePartBody = {
   attachmentId?: string;
   data?: string;
@@ -45,7 +43,7 @@ async function gmailFetch<T>(accessToken: string, path: string, init?: RequestIn
 }
 
 export async function searchUnreadGmailMessageIds(accessToken: string, days: number) {
-  const query = `is:unread newer_than:${days}d`;
+  const query = `is:unread has:attachment newer_than:${days}d`;
   const response = await gmailFetch<{ messages?: Array<{ id: string }> }>(
     accessToken,
     `/users/me/messages?q=${encodeURIComponent(query)}&maxResults=100`,
@@ -89,31 +87,7 @@ export function pickReceiptArtifactFromMessage(message: GmailMessage) {
       part: attachments[0],
     };
   }
-
-  const { html, text } = extractMessageBody(message.payload);
-  const content = html ? htmlToPlainText(html) : text;
-  if (!content) {
-    return null;
-  }
-
-  const headers = getHeaderMap(message.payload?.headers);
-  const pdf = renderTextToPdf({
-    title: headers.Subject || "Email receipt",
-    lines: [
-      `Subject: ${headers.Subject || "(none)"}`,
-      `From: ${headers.From || "(unknown)"}`,
-      `Date: ${headers.Date || "(unknown)"}`,
-      "",
-      ...content.split("\n"),
-    ],
-  });
-
-  return {
-    kind: "email_pdf" as const,
-    bytes: pdf,
-    filename: safeEmailPdfFilename(headers.Subject || "email-receipt"),
-    mimeType: "application/pdf",
-  };
+  return null;
 }
 
 export function getMessageMetadata(message: GmailMessage) {
@@ -166,40 +140,12 @@ export async function materializeReceiptAttachment(accessToken: string, messageI
   };
 }
 
-function extractMessageBody(part?: GmailMessagePart): { html: string | null; text: string | null } {
-  if (!part) return { html: null, text: null };
-
-  let html: string | null = null;
-  let text: string | null = null;
-
-  const visit = (node: GmailMessagePart) => {
-    if (node.mimeType === "text/html" && node.body?.data && !html) {
-      html = Buffer.from(node.body.data, "base64url").toString("utf8");
-    }
-    if (node.mimeType === "text/plain" && node.body?.data && !text) {
-      text = Buffer.from(node.body.data, "base64url").toString("utf8");
-    }
-    for (const child of node.parts ?? []) visit(child);
-  };
-
-  visit(part);
-  return { html, text };
-}
-
 function inferMimeTypeFromFilename(filename: string) {
   const clean = filename.toLowerCase();
   if (clean.endsWith(".pdf")) return "application/pdf";
   if (clean.endsWith(".png")) return "image/png";
   if (clean.endsWith(".webp")) return "image/webp";
   return "image/jpeg";
-}
-
-function safeEmailPdfFilename(subject: string) {
-  return `${subject
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "email-receipt"}.pdf`;
 }
 
 function getHeaderMap(headers?: Array<{ name?: string; value?: string }>) {

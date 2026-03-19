@@ -122,23 +122,11 @@ async function ingestGmailMessage(params: { link: GmailAccountLink; accessToken:
     throw new Error(`Team ${link.team_id} was not found for Gmail link ${link.id}.`);
   }
 
-  let bytes: Buffer;
-  let filename: string;
-  let mimeType: string;
-  let artifactSource: "attachment" | "email_pdf";
-
-  if (artifact.kind === "attachment") {
-    const materialized = await materializeReceiptAttachment(accessToken, message.id, artifact.part);
-    bytes = materialized.bytes;
-    filename = materialized.filename;
-    mimeType = materialized.mimeType;
-    artifactSource = "attachment";
-  } else {
-    bytes = artifact.bytes;
-    filename = artifact.filename;
-    mimeType = artifact.mimeType;
-    artifactSource = "email_pdf";
-  }
+  const materialized = await materializeReceiptAttachment(accessToken, message.id, artifact.part);
+  const bytes = materialized.bytes;
+  const filename = materialized.filename;
+  const mimeType = materialized.mimeType;
+  const artifactSource = "attachment" as const;
 
   if (!isSupportedReceiptMimeType(mimeType)) {
     return 0;
@@ -160,11 +148,13 @@ async function ingestGmailMessage(params: { link: GmailAccountLink; accessToken:
   });
 
   const extraction = compactExtractionForSlack(
-    await extractReceiptFromImage({
-      dataUrl: toDataUrl(toArrayBuffer(bytes), mimeType),
-      mimeType,
-      filename,
-    }),
+    forceEmailPaymentMethod(
+      await extractReceiptFromImage({
+        dataUrl: toDataUrl(toArrayBuffer(bytes), mimeType),
+        mimeType,
+        filename,
+      }),
+    ),
   );
 
   const metadata = getMessageMetadata(message);
@@ -182,6 +172,12 @@ async function ingestGmailMessage(params: { link: GmailAccountLink; accessToken:
     artifactStoragePath: storagePath,
     extraction,
   });
+
+  if (extraction.confidence < 0.5) {
+    await markEmailReceiptIngestionFailed(ingestion.id, `Skipped low-confidence email receipt (${Math.round(extraction.confidence * 100)}%).`);
+    await markGmailMessageRead(accessToken, message.id);
+    return 0;
+  }
 
   try {
     const leadProfiles = await getLeadProfilesForTeam(link.team_id);
@@ -265,6 +261,13 @@ function toExpiryIso(expiresInSeconds: number) {
 
 function toArrayBuffer(buffer: Buffer) {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+}
+
+function forceEmailPaymentMethod(extraction: GmailPendingReceiptPayload["extraction"]) {
+  return {
+    ...extraction,
+    payment_method: "credit_card" as const,
+  };
 }
 
 export { buildGoogleConsentUrl };
