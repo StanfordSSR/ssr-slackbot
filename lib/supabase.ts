@@ -49,11 +49,7 @@ export async function uploadReceiptToStorage(params: {
 }) {
   const bucket = getEnv("SUPABASE_RECEIPT_BUCKET");
   if (!bucket) {
-    return {
-      receipt_path: null as string | null,
-      receipt_file_name: null as string | null,
-      receipt_uploaded_at: null as string | null,
-    };
+    throw new Error("Missing required environment variable: SUPABASE_RECEIPT_BUCKET");
   }
 
   const extension = extensionFromFilename(params.filename, params.mimeType);
@@ -61,12 +57,24 @@ export async function uploadReceiptToStorage(params: {
   const safeBaseName = sanitizeStorageFileName(params.filename.replace(/\.[^.]+$/, ""));
   const path = `${prefix}/${params.teamId}/${params.purchaseId}-${safeBaseName}.${extension}`;
 
+  console.info("Uploading receipt to Supabase Storage", {
+    bucket,
+    path,
+    mimeType: params.mimeType,
+    filename: params.filename,
+  });
+
   const { error } = await supabase.storage.from(bucket).upload(path, params.fileBytes, {
     contentType: params.mimeType,
     upsert: true,
   });
 
   if (error) throw error;
+
+  console.info("Uploaded receipt to Supabase Storage", {
+    bucket,
+    path,
+  });
 
   return {
     receipt_path: path,
