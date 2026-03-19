@@ -27,7 +27,10 @@ export type LeadTeam = {
   slug: string | null;
 };
 
-export type PendingReceiptPayload = {
+export type ReceiptSource = "slack" | "gmail";
+
+export type SlackPendingReceiptPayload = {
+  source: "slack";
   teamId: string;
   teamName: string;
   fileId: string;
@@ -35,3 +38,20 @@ export type PendingReceiptPayload = {
   mimeType: string;
   extraction: ReceiptExtraction;
 };
+
+export type GmailArtifactSource = "attachment" | "email_pdf";
+
+export type GmailPendingReceiptPayload = {
+  source: "gmail";
+  ingestionId: string;
+  teamId: string;
+  teamName: string;
+  filename: string;
+  mimeType: string;
+  artifactSource: GmailArtifactSource;
+  senderEmail: string | null;
+  subject: string | null;
+  extraction: ReceiptExtraction;
+};
+
+export type PendingReceiptPayload = SlackPendingReceiptPayload | GmailPendingReceiptPayload;

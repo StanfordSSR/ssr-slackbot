@@ -37,3 +37,7 @@ export function encodeActionValue(payload: PendingReceiptPayload) {
 export function decodeActionValue(value: string): PendingReceiptPayload {
   return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as PendingReceiptPayload;
 }
+
+export function isGmailPendingReceiptPayload(payload: PendingReceiptPayload) {
+  return payload.source === "gmail";
+}

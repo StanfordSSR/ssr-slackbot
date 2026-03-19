@@ -174,6 +174,7 @@ async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]
 
   if (teams.length === 1) {
     const payload = {
+      source: "slack" as const,
       teamId: teams[0].id,
       teamName: teams[0].name,
       fileId: slackFile.id,
