@@ -9,11 +9,14 @@ import { amazonClaimDecisionBlocks, receiptDecisionBlocks, receiptReviewBlocks }
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
   attachAmazonPurchaseLog,
+  beginSlackReceiptConfirmation,
+  clearSlackReceiptConfirmation,
   claimAmazonOrderIngestion,
   createAmazonPurchaseLog,
   approveEmailReceiptIngestion,
   createPurchaseLog,
   findProfileByEmail,
+  finishSlackReceiptConfirmation,
   getAmazonOrderIngestionById,
   getGmailAccountLinkById,
   getEmailReceiptIngestionById,
@@ -129,82 +132,143 @@ export async function POST(request: Request) {
     if (decoded.source !== "slack") {
       return NextResponse.json({ text: "That receipt payload was invalid.", replace_original: false });
     }
-    const identity = await getSlackUserIdentity(payload.user.id);
-    const profile = await findProfileByEmail(identity.email);
-
-    if (!profile) {
-      await postDm(channel, `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`);
-      return NextResponse.json({ text: "Missing HQ profile match.", replace_original: false });
+    const responseUrl = payload.response_url;
+    if (!responseUrl) {
+      return NextResponse.json({ text: "Slack did not include a response URL for this action.", replace_original: false });
     }
 
-    const leadTeams = await getLeadTeamsForUser(profile.id);
-    const authorized = leadTeams.some((team) => team.id === decoded.teamId);
-    if (!authorized) {
-      await postDm(channel, "You are no longer authorized to submit receipts for that team.");
-      return NextResponse.json({ text: "Not authorized.", replace_original: false });
-    }
+    after(async () => {
+      let confirmationStarted = false;
+      try {
+        const identity = await getSlackUserIdentity(payload.user.id);
+        const profile = await findProfileByEmail(identity.email);
 
-    const fileInfo = await fetchFileInfo(decoded.fileId);
-    const slackFile = fileInfo.file as {
-      id: string;
-      mimetype?: string;
-      name?: string;
-      url_private_download?: string;
-    };
+        if (!profile) {
+          await postSlackResponse(responseUrl, {
+            text: `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`,
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
-    if (!slackFile.url_private_download) {
-      throw new Error("Slack did not provide a private download URL for the receipt.");
-    }
+        const leadTeams = await getLeadTeamsForUser(profile.id);
+        const authorized = leadTeams.some((team) => team.id === decoded.teamId);
+        if (!authorized) {
+          await postSlackResponse(responseUrl, {
+            text: "You are no longer authorized to submit receipts for that team.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
-    const fileBytes = await downloadSlackFile(slackFile.url_private_download);
-    const purchaseId = crypto.randomUUID();
-    const receipt = await uploadReceiptToStorage({
-      teamId: decoded.teamId,
-      purchaseId,
-      fileBytes: fileBytes.arrayBuffer,
-      mimeType: decoded.mimeType || slackFile.mimetype || fileBytes.contentType,
-      filename: decoded.filename || slackFile.name || "receipt",
-    });
+        const started = await beginSlackReceiptConfirmation({
+          slackFileId: decoded.fileId,
+          teamId: decoded.teamId,
+          profileId: profile.id,
+        });
 
-    await createPurchaseLog({
-      purchaseId,
-      payload: decoded,
-      profileId: profile.id,
-      personName: profile.full_name || identity.realName || identity.displayName,
-      receipt,
-    });
+        if (!started) {
+          await postSlackResponse(responseUrl, {
+            text: "Confirmed.",
+            replace_original: true,
+            blocks: receiptDecisionBlocks({
+              status: "confirmed",
+              title: "Receipt Review",
+              detail: `Already logged for ${decoded.teamName}.`,
+            }),
+          });
+          return;
+        }
+        confirmationStarted = true;
 
-    await recordAuditEvent({
-      actorId: profile.id,
-      action: "purchase.added",
-      targetType: "slack_receipt",
-      targetId: purchaseId,
-      summary: `Bot added purchase for ${decoded.teamName} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"} from Slack file "${decoded.filename}".`,
-      details: {
-        source: "slack",
-        teamId: decoded.teamId,
-        teamName: decoded.teamName,
-        purchaseId,
-        filename: decoded.filename,
-        slackUserId: payload.user.id,
-        actorName: profile.full_name || identity.realName || identity.displayName,
-      },
-    });
+        const fileInfo = await fetchFileInfo(decoded.fileId);
+        const slackFile = fileInfo.file as {
+          id: string;
+          mimetype?: string;
+          name?: string;
+          url_private_download?: string;
+        };
 
-    await postDm(
-      channel,
-      `Logged *${decoded.extraction.item_name || decoded.extraction.merchant || "receipt purchase"}* for *${decoded.teamName}*.
+        if (!slackFile.url_private_download) {
+          throw new Error("Slack did not provide a private download URL for the receipt.");
+        }
+
+        const fileBytes = await downloadSlackFile(slackFile.url_private_download);
+        const purchaseId = crypto.randomUUID();
+        const receipt = await uploadReceiptToStorage({
+          teamId: decoded.teamId,
+          purchaseId,
+          fileBytes: fileBytes.arrayBuffer,
+          mimeType: decoded.mimeType || slackFile.mimetype || fileBytes.contentType,
+          filename: decoded.filename || slackFile.name || "receipt",
+        });
+
+        await createPurchaseLog({
+          purchaseId,
+          payload: decoded,
+          profileId: profile.id,
+          personName: profile.full_name || identity.realName || identity.displayName,
+          receipt,
+        });
+
+        await finishSlackReceiptConfirmation({
+          slackFileId: decoded.fileId,
+          teamId: decoded.teamId,
+          purchaseLogId: purchaseId,
+        });
+
+        await recordAuditEvent({
+          actorId: profile.id,
+          action: "purchase.added",
+          targetType: "slack_receipt",
+          targetId: purchaseId,
+          summary: `Bot added purchase for ${decoded.teamName} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"} from Slack file "${decoded.filename}".`,
+          details: {
+            source: "slack",
+            teamId: decoded.teamId,
+            teamName: decoded.teamName,
+            purchaseId,
+            filename: decoded.filename,
+            slackUserId: payload.user.id,
+            actorName: profile.full_name || identity.realName || identity.displayName,
+          },
+        });
+
+        await postDm(
+          channel,
+          `Logged *${decoded.extraction.item_name || decoded.extraction.merchant || "receipt purchase"}* for *${decoded.teamName}*.
 Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
-    );
+        );
+
+        await postSlackResponse(responseUrl, {
+          text: "Confirmed.",
+          replace_original: true,
+          blocks: receiptDecisionBlocks({
+            status: "confirmed",
+            title: "Receipt Review",
+            detail: `Logged for ${decoded.teamName}.`,
+          }),
+        });
+      } catch (error) {
+        if (confirmationStarted) {
+          await clearSlackReceiptConfirmation({
+            slackFileId: decoded.fileId,
+            teamId: decoded.teamId,
+          });
+        }
+        await postSlackResponse(responseUrl, {
+          text: `Receipt logging failed: ${error instanceof Error ? error.message : String(error)}`,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      }
+    });
 
     return NextResponse.json({
-      text: "Confirmed.",
-      replace_original: true,
-      blocks: receiptDecisionBlocks({
-        status: "confirmed",
-        title: "Receipt Review",
-        detail: `Logged for ${decoded.teamName}.`,
-      }),
+      text: "Logging receipt...",
+      replace_original: false,
     });
   }
 

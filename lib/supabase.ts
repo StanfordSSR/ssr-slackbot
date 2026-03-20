@@ -222,6 +222,58 @@ export async function createPurchaseLog(params: {
   return { purchaseId };
 }
 
+export async function beginSlackReceiptConfirmation(params: {
+  slackFileId: string;
+  teamId: string;
+  profileId: string;
+}) {
+  const { data, error } = await supabase
+    .from("slack_receipt_confirmations")
+    .insert({
+      slack_file_id: params.slackFileId,
+      team_id: params.teamId,
+      confirmed_by_profile_id: params.profileId,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    if ((error as { code?: string }).code === "23505") {
+      return null;
+    }
+    throw error;
+  }
+
+  return data as { id: string } | null;
+}
+
+export async function finishSlackReceiptConfirmation(params: {
+  slackFileId: string;
+  teamId: string;
+  purchaseLogId: string;
+}) {
+  const { error } = await supabase
+    .from("slack_receipt_confirmations")
+    .update({
+      purchase_log_id: params.purchaseLogId,
+    })
+    .eq("slack_file_id", params.slackFileId)
+    .eq("team_id", params.teamId);
+
+  if (error) throw error;
+}
+
+export async function clearSlackReceiptConfirmation(params: { slackFileId: string; teamId: string }) {
+  const { error } = await supabase
+    .from("slack_receipt_confirmations")
+    .delete()
+    .eq("slack_file_id", params.slackFileId)
+    .eq("team_id", params.teamId)
+    .is("purchase_log_id", null);
+
+  if (error) throw error;
+}
+
 export async function createAmazonPurchaseLog(params: {
   purchaseId?: string;
   teamId: string;
