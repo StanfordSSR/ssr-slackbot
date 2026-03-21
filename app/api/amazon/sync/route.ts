@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const secret = getEnv("AMAZON_CRON_SECRET") || getEnv("GMAIL_CRON_SECRET");
+  const secret = getEnv("CRON_SECRET") || getEnv("AMAZON_CRON_SECRET") || getEnv("GMAIL_CRON_SECRET");
   if (secret) {
     const auth = request.headers.get("authorization");
     if (auth !== `Bearer ${secret}`) {
