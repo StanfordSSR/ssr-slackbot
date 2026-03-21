@@ -48,6 +48,34 @@ type ActionPayload = {
   actions?: Array<{ action_id: string; value?: string; selected_option?: { value?: string } }>;
 };
 
+function describeError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object") {
+    const maybeError = error as {
+      message?: string;
+      details?: string;
+      code?: string;
+      hint?: string;
+      error?: string;
+    };
+    const parts = [maybeError.code, maybeError.message || maybeError.error, maybeError.details, maybeError.hint].filter(Boolean);
+    if (parts.length > 0) {
+      return parts.join(": ");
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "Unknown error object";
+    }
+  }
+
+  return String(error);
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
   const signingSecret = getEnv("SLACK_SIGNING_SECRET")!;
@@ -259,7 +287,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
           });
         }
         await postSlackResponse(responseUrl, {
-          text: `Receipt logging failed: ${error instanceof Error ? error.message : String(error)}`,
+          text: `Receipt logging failed: ${describeError(error)}`,
           replace_original: false,
           response_type: "ephemeral",
         });
@@ -388,7 +416,7 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
         });
       } catch (error) {
         await postSlackResponse(responseUrl, {
-          text: `Amazon claim failed: ${error instanceof Error ? error.message : String(error)}`,
+          text: `Amazon claim failed: ${describeError(error)}`,
           replace_original: false,
           response_type: "ephemeral",
         });
@@ -605,7 +633,7 @@ Amount: ${finalIngestion.extraction.amount_total ?? "unknown"}`,
         });
       } catch (error) {
         await postSlackResponse(responseUrl, {
-          text: `Receipt logging failed: ${error instanceof Error ? error.message : String(error)}`,
+          text: `Receipt logging failed: ${describeError(error)}`,
           replace_original: false,
           response_type: "ephemeral",
         });
@@ -727,7 +755,7 @@ Amount: ${finalIngestion.extraction.amount_total ?? "unknown"}`,
         });
       } catch (error) {
         await postSlackResponse(responseUrl, {
-          text: `Attachment update failed: ${error instanceof Error ? error.message : String(error)}`,
+          text: `Attachment update failed: ${describeError(error)}`,
           replace_original: false,
           response_type: "ephemeral",
         });
