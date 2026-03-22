@@ -127,7 +127,7 @@ export async function validateAndExecuteSql(params: {
   if (catalog.tables.length === 0) {
     throw new Error("Schema catalog is not available yet. Run /refreshschema after applying the schema SQL migration.");
   }
-  const trimmedSql = params.sql.trim().replace(/;\s*$/, "");
+  const trimmedSql = normalizeSqlCandidate(params.sql);
   const normalized = trimmedSql.replace(/\s+/g, " ").trim();
   const lower = normalized.toLowerCase();
 
@@ -311,6 +311,22 @@ function describeTableName(tableName: string) {
 function extractReferencedTables(sql: string) {
   const matches = [...sql.matchAll(/\b(?:from|join)\s+([a-z0-9_."]+)/gi)];
   return [...new Set(matches.map((match) => match[1].replace(/"/g, "")).map((name) => (name.includes(".") ? name : `public.${name}`)))];
+}
+
+function normalizeSqlCandidate(sql: string) {
+  let cleaned = sql.trim();
+
+  cleaned = cleaned.replace(/^```(?:sql)?\s*/i, "").replace(/\s*```$/i, "");
+  cleaned = cleaned.replace(/^\s*sql\s*:\s*/i, "");
+  cleaned = cleaned.replace(/^\s*query\s*:\s*/i, "");
+
+  const firstQueryIndex = cleaned.search(/\b(select|with)\b/i);
+  if (firstQueryIndex > 0) {
+    cleaned = cleaned.slice(firstQueryIndex);
+  }
+
+  cleaned = cleaned.replace(/;\s*$/, "").trim();
+  return cleaned;
 }
 
 function fallbackSchemaCatalogText() {
