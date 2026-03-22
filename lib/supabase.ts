@@ -87,6 +87,20 @@ export type AmazonOrderIngestion = {
   error_text: string | null;
 };
 
+export type InternalNotificationRequest = {
+  id: string;
+  idempotency_key: string;
+  notification_type: string;
+  team_id: string | null;
+  team_name: string | null;
+  status: "processing" | "completed" | "failed";
+  request_payload: Record<string, unknown>;
+  response_payload: Record<string, unknown> | null;
+  delivered_count: number;
+  failed_count: number;
+  completed_at: string | null;
+};
+
 export async function findProfileByEmail(email: string) {
   const { data, error } = await supabase
     .from("profiles")
@@ -96,6 +110,96 @@ export async function findProfileByEmail(email: string) {
 
   if (error) throw error;
   return data as { id: string; full_name: string | null; email: string | null; is_admin?: boolean } | null;
+}
+
+export async function getSlackUserMappingsByEmails(emails: string[]) {
+  const normalized = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("slack_user_links")
+    .select("slack_user_id, user_id, profiles!inner(email, full_name)")
+    .in("profiles.email", normalized);
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => {
+    const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
+    return {
+      email: ((profile?.email as string | null) ?? "").trim().toLowerCase(),
+      fullName: (profile?.full_name as string | null) ?? null,
+      slackUserId: row.slack_user_id as string,
+      profileId: (row.user_id as string | null) ?? null,
+    };
+  });
+}
+
+export async function createInternalNotificationRequest(params: {
+  idempotencyKey: string;
+  type: string;
+  teamId: string | null;
+  teamName: string | null;
+  requestPayload: Record<string, unknown>;
+}) {
+  const { data, error } = await supabase
+    .from("internal_notification_requests")
+    .insert({
+      idempotency_key: params.idempotencyKey,
+      notification_type: params.type,
+      team_id: params.teamId,
+      team_name: params.teamName,
+      status: "processing",
+      request_payload: params.requestPayload,
+    })
+    .select(
+      "id, idempotency_key, notification_type, team_id, team_name, status, request_payload, response_payload, delivered_count, failed_count, completed_at",
+    )
+    .maybeSingle();
+
+  if (error) {
+    if ((error as { code?: string }).code === "23505") {
+      return null;
+    }
+    throw error;
+  }
+
+  return data as InternalNotificationRequest | null;
+}
+
+export async function getInternalNotificationRequestByKey(idempotencyKey: string) {
+  const { data, error } = await supabase
+    .from("internal_notification_requests")
+    .select(
+      "id, idempotency_key, notification_type, team_id, team_name, status, request_payload, response_payload, delivered_count, failed_count, completed_at",
+    )
+    .eq("idempotency_key", idempotencyKey)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as InternalNotificationRequest | null;
+}
+
+export async function completeInternalNotificationRequest(params: {
+  idempotencyKey: string;
+  status: "completed" | "failed";
+  deliveredCount: number;
+  failedCount: number;
+  responsePayload: Record<string, unknown>;
+}) {
+  const { error } = await supabase
+    .from("internal_notification_requests")
+    .update({
+      status: params.status,
+      delivered_count: params.deliveredCount,
+      failed_count: params.failedCount,
+      response_payload: params.responsePayload,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("idempotency_key", params.idempotencyKey);
+
+  if (error) throw error;
 }
 
 export async function getLeadTeamsForUser(userId: string): Promise<LeadTeam[]> {
