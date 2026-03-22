@@ -4,7 +4,8 @@ import {
   completeInternalNotificationRequest,
   createInternalNotificationRequest,
   getInternalNotificationRequestByKey,
-  getSlackUserMappingsByEmails,
+  getProfileSlackMappingsByEmails,
+  updateProfileSlackUserId,
 } from "@/lib/supabase";
 import { lookupSlackUserIdByEmail, postDirectMessageToUser } from "@/lib/slack";
 
@@ -116,13 +117,20 @@ function describeError(error: unknown) {
   return String(error);
 }
 
-async function resolveSlackUserId(email: string, mappedByEmail: Map<string, { slackUserId: string }>) {
+async function resolveSlackUserId(
+  email: string,
+  mappedByEmail: Map<string, { slackUserId: string | null; profileId?: string | null }>,
+) {
   const mapped = mappedByEmail.get(email);
   if (mapped?.slackUserId) {
     return mapped.slackUserId;
   }
 
-  return lookupSlackUserIdByEmail(email);
+  const slackUserId = await lookupSlackUserIdByEmail(email);
+  if (mapped?.profileId) {
+    await updateProfileSlackUserId({ profileId: mapped.profileId, slackUserId });
+  }
+  return slackUserId;
 }
 
 export async function POST(request: Request) {
@@ -200,8 +208,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const mappedUsers = await getSlackUserMappingsByEmails(recipientEmails);
-  const mappedByEmail = new Map(mappedUsers.map((entry) => [entry.email, { slackUserId: entry.slackUserId }]));
+  const mappedUsers = await getProfileSlackMappingsByEmails(recipientEmails);
+  const mappedByEmail = new Map(
+    mappedUsers.map((entry) => [entry.email, { slackUserId: entry.slackUserId, profileId: entry.profileId }]),
+  );
   const blocks = buildBlocks({ ...body, recipient_emails: recipientEmails });
   const text = buildText({ ...body, recipient_emails: recipientEmails });
 

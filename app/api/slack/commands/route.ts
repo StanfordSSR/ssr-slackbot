@@ -6,8 +6,16 @@ import { after } from "next/server";
 import { buildAmazonOAuthLink, syncActiveAmazonAccountForDays } from "@/lib/amazon-orders";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
-import { getSlackUserIdentity, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
-import { findProfileByEmail, getActiveAmazonAccountLink, getActiveGmailAccountLinksForProfile, getLeadTeamsForUser, getTeamById } from "@/lib/supabase";
+import { getSlackUserIdentity, lookupSlackUserIdByEmail, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
+import {
+  findProfileByEmail,
+  getActiveAmazonAccountLink,
+  getActiveGmailAccountLinksForProfile,
+  getLeadTeamsForUser,
+  getProfilesForSlackSync,
+  getTeamById,
+  updateProfileSlackUserId,
+} from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,10 +47,14 @@ export async function POST(request: Request) {
     return handleAmazonLinkCommand({ text, slackUserId });
   }
 
+  if (command === "/slackusersync") {
+    return handleSlackUserSyncCommand({ slackUserId, responseUrl });
+  }
+
   if (command && command !== "/link") {
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, and `/amazonsync`.",
+      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, and `/slackusersync`.",
     });
   }
 
@@ -275,5 +287,59 @@ async function handleAmazonSyncCommand(params: { text: string; slackUserId: stri
   return NextResponse.json({
     response_type: "ephemeral",
     text: `Starting Amazon sync for the last ${days} day(s). I’ll clean this up when it finishes.`,
+  });
+}
+
+async function handleSlackUserSyncCommand(params: { slackUserId: string; responseUrl: string }) {
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile?.is_admin) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Only admins can run `/slackusersync`.",
+    });
+  }
+
+  after(async () => {
+    let matched = 0;
+    let failed = 0;
+    let alreadyLinked = 0;
+
+    try {
+      const profiles = await getProfilesForSlackSync();
+
+      for (const entry of profiles) {
+        const email = entry.email?.trim().toLowerCase();
+        if (!email) continue;
+
+        if (entry.slack_user_id) {
+          alreadyLinked += 1;
+          continue;
+        }
+
+        try {
+          const slackUserId = await lookupSlackUserIdByEmail(email);
+          await updateProfileSlackUserId({ profileId: entry.id, slackUserId });
+          matched += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: `Slack user sync finished. Added ${matched}, already linked ${alreadyLinked}, failed ${failed}.`,
+      });
+    } catch (error) {
+      await postDelayedSlackResponse(
+        params.responseUrl,
+        `Slack user sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: "Starting Slack user sync. I’ll clean this up when it finishes.",
   });
 }

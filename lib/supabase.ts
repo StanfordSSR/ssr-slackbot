@@ -104,34 +104,59 @@ export type InternalNotificationRequest = {
 export async function findProfileByEmail(email: string) {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, email, is_admin")
+    .select("id, full_name, email, is_admin, slack_user_id")
     .ilike("email", email)
     .maybeSingle();
 
   if (error) throw error;
-  return data as { id: string; full_name: string | null; email: string | null; is_admin?: boolean } | null;
+  return data as { id: string; full_name: string | null; email: string | null; is_admin?: boolean; slack_user_id?: string | null } | null;
 }
 
-export async function getSlackUserMappingsByEmails(emails: string[]) {
+export async function getProfilesForSlackSync() {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, email, full_name, slack_user_id")
+    .not("email", "is", null)
+    .order("email");
+
+  if (error) throw error;
+
+  return (data ?? []) as Array<{
+    id: string;
+    email: string | null;
+    full_name: string | null;
+    slack_user_id: string | null;
+  }>;
+}
+
+export async function updateProfileSlackUserId(params: { profileId: string; slackUserId: string }) {
+  const { error } = await supabase
+    .from("profiles")
+    .update({ slack_user_id: params.slackUserId })
+    .eq("id", params.profileId);
+
+  if (error) throw error;
+}
+
+export async function getProfileSlackMappingsByEmails(emails: string[]) {
   const normalized = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
   if (normalized.length === 0) {
     return [];
   }
 
   const { data, error } = await supabase
-    .from("slack_user_links")
-    .select("slack_user_id, user_id, profiles!inner(email, full_name)")
-    .in("profiles.email", normalized);
+    .from("profiles")
+    .select("id, email, full_name, slack_user_id")
+    .in("email", normalized);
 
   if (error) throw error;
 
   return (data ?? []).map((row) => {
-    const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
     return {
-      email: ((profile?.email as string | null) ?? "").trim().toLowerCase(),
-      fullName: (profile?.full_name as string | null) ?? null,
-      slackUserId: row.slack_user_id as string,
-      profileId: (row.user_id as string | null) ?? null,
+      email: ((row.email as string | null) ?? "").trim().toLowerCase(),
+      fullName: (row.full_name as string | null) ?? null,
+      slackUserId: (row.slack_user_id as string | null) ?? null,
+      profileId: (row.id as string | null) ?? null,
     };
   });
 }
