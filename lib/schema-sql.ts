@@ -127,13 +127,14 @@ export async function validateAndExecuteSql(params: {
   if (catalog.tables.length === 0) {
     throw new Error("Schema catalog is not available yet. Run /refreshschema after applying the schema SQL migration.");
   }
-  const normalized = params.sql.replace(/\s+/g, " ").trim();
+  const trimmedSql = params.sql.trim().replace(/;\s*$/, "");
+  const normalized = trimmedSql.replace(/\s+/g, " ").trim();
   const lower = normalized.toLowerCase();
 
   if (!/^\s*(select|with)\b/.test(lower)) {
     throw new Error("Only SELECT/CTE SQL is allowed.");
   }
-  if (lower.includes(";")) {
+  if (/[;](?=.*\S)/.test(trimmedSql)) {
     throw new Error("Multiple statements are not allowed.");
   }
   if (/\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|merge|copy|comment|execute|call|do)\b/.test(lower)) {
