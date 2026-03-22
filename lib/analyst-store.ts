@@ -158,7 +158,12 @@ export async function getSchemaCatalog() {
     .neq("access_level", "blocked")
     .order("schema_name")
     .order("table_name");
-  if (tablesError) throw tablesError;
+  if (tablesError) {
+    if ((tablesError as { code?: string }).code === "PGRST205") {
+      return { tables: [], columns: [] };
+    }
+    throw tablesError;
+  }
 
   const tableIds = (tables ?? []).map((table) => table.id as string);
   const { data: columns, error: columnsError } = await supabase
@@ -167,7 +172,12 @@ export async function getSchemaCatalog() {
     .in("table_id", tableIds.length > 0 ? tableIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("is_queryable", true)
     .order("ordinal_position");
-  if (columnsError) throw columnsError;
+  if (columnsError) {
+    if ((columnsError as { code?: string }).code === "PGRST205") {
+      return { tables: [], columns: [] };
+    }
+    throw columnsError;
+  }
 
   return {
     tables: (tables ?? []) as SchemaCatalogTable[],
@@ -504,13 +514,32 @@ export async function getTeamDirectory(teamIds?: string[]) {
   const rows = (data ?? []) as Array<{ id: string; name: string; slug: string | null; is_active: boolean }>;
   if (rows.length === 0) return [];
 
-  const { data: memberships, error: membershipsError } = await supabase
+  let memberships:
+    | Array<{
+        team_id: string;
+      }>
+    | null = null;
+
+  const activeAttempt = await supabase
     .from("team_roster_members")
     .select("team_id")
     .in("team_id", rows.map((row) => row.id))
     .eq("is_active", true);
 
-  if (membershipsError) throw membershipsError;
+  if (activeAttempt.error) {
+    if ((activeAttempt.error as { code?: string }).code === "42703") {
+      const fallbackAttempt = await supabase
+        .from("team_roster_members")
+        .select("team_id")
+        .in("team_id", rows.map((row) => row.id));
+      if (fallbackAttempt.error) throw fallbackAttempt.error;
+      memberships = (fallbackAttempt.data ?? []) as Array<{ team_id: string }>;
+    } else {
+      throw activeAttempt.error;
+    }
+  } else {
+    memberships = (activeAttempt.data ?? []) as Array<{ team_id: string }>;
+  }
 
   const counts = new Map<string, number>();
   for (const membership of memberships ?? []) {

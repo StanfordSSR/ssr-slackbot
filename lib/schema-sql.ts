@@ -83,13 +83,20 @@ export async function refreshSchemaCatalog() {
 export async function getSchemaCatalogText() {
   const catalog = await getSchemaCatalog();
   if (catalog.tables.length === 0) {
-    const refreshed = await refreshSchemaCatalog();
-    if (refreshed.refreshedTables === 0) {
-      return "No schema catalog available.";
+    try {
+      const refreshed = await refreshSchemaCatalog();
+      if (refreshed.refreshedTables === 0) {
+        return fallbackSchemaCatalogText();
+      }
+    } catch {
+      return fallbackSchemaCatalogText();
     }
   }
 
   const latest = await getSchemaCatalog();
+  if (latest.tables.length === 0) {
+    return fallbackSchemaCatalogText();
+  }
   const columnsByTable = new Map<string, SchemaCatalogColumn[]>();
   for (const column of latest.columns) {
     const current = columnsByTable.get(column.table_id) ?? [];
@@ -117,6 +124,9 @@ export async function validateAndExecuteSql(params: {
   allowedTeamIds: string[];
 }) {
   const catalog = await getSchemaCatalog();
+  if (catalog.tables.length === 0) {
+    throw new Error("Schema catalog is not available yet. Run /refreshschema after applying the schema SQL migration.");
+  }
   const normalized = params.sql.replace(/\s+/g, " ").trim();
   const lower = normalized.toLowerCase();
 
@@ -300,4 +310,15 @@ function describeTableName(tableName: string) {
 function extractReferencedTables(sql: string) {
   const matches = [...sql.matchAll(/\b(?:from|join)\s+([a-z0-9_."]+)/gi)];
   return [...new Set(matches.map((match) => match[1].replace(/"/g, "")).map((name) => (name.includes(".") ? name : `public.${name}`)))];
+}
+
+function fallbackSchemaCatalogText() {
+  return [
+    "public.teams scope=org columns=[id:uuid, name:text, slug:text, is_active:boolean]",
+    "public.team_roster_members scope=team roles=team_size columns=[team_id:uuid]",
+    "public.team_memberships scope=team roles=portal_roles columns=[team_id:uuid, user_id:uuid, team_role:text, is_active:boolean]",
+    "public.purchase_logs scope=team time=purchased_at roles=purchase_time|expenses columns=[id:uuid, team_id:uuid, amount_cents:bigint, description:text, purchased_at:timestamptz, person_name:text, payment_method:text, category:text, receipt_uploaded_at:timestamptz]",
+    "public.email_receipt_ingestions scope=team columns=[id:uuid, team_id:uuid, subject:text, received_at:timestamptz, status:text]",
+    "public.amazon_order_ingestions scope=team columns=[id:uuid, claimed_team_id:uuid, purchase_date:date, amount_total:numeric, item_name:text, status:text]",
+  ].join("\n");
 }
