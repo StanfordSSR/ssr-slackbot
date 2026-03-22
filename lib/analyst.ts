@@ -11,6 +11,7 @@ import {
   getAnswerCache,
   getBudgetVsActual,
   getContextSourceVersionKey,
+  getMonthlySpendByCategoryForTeams,
   getMonthlySpendForTeams,
   getPurchaseLogs,
   getRecentReports,
@@ -89,6 +90,7 @@ export async function runAnalystSession(params: {
     prompt: params.prompt,
     normalizedPrompt,
     accessibleTeams,
+    history: params.history ?? [],
   });
   if (deterministic) {
     return deterministic;
@@ -740,6 +742,10 @@ function looksLikeClubMonthlySpendQuestion(normalizedPrompt: string) {
   return hasClubScope && hasSpendIntent && hasMonthIntent;
 }
 
+function isCategorySplitQuestion(normalizedPrompt: string) {
+  return /(split by category|by category|category of expense|expense category|categories)/.test(normalizedPrompt);
+}
+
 function isPerPersonQuestion(normalizedPrompt: string) {
   return /(per person|per member|on average|average per person|divide by member count|divide by roster)/.test(normalizedPrompt);
 }
@@ -838,9 +844,50 @@ async function maybeHandleDeterministicPrompt(params: {
   prompt: string;
   normalizedPrompt: string;
   accessibleTeams: Array<{ id: string; name: string }>;
+  history: Array<{ speaker: string; text: string }>;
 }) {
+  const historyText = params.history.map((item) => item.text.toLowerCase()).join("\n");
+  const startDateFromContext = inferMonthlyStartDate(params.prompt) ?? inferMonthlyStartDate(historyText);
+
+  if (isCategorySplitQuestion(params.normalizedPrompt) && /club spend per month|total club spend per month/.test(historyText)) {
+    const rows = await getMonthlySpendByCategoryForTeams({
+      teamIds: params.accessibleTeams.map((team) => team.id),
+      startDate: startDateFromContext,
+    });
+    const months = buildMonthRange(
+      startDateFromContext ?? `${rows[0]?.month ?? new Date().toISOString().slice(0, 7)}-01`,
+      new Date(),
+    );
+    const byMonth = new Map<string, Array<{ category: string; totalCents: number }>>();
+    for (const row of rows) {
+      const current = byMonth.get(row.month) ?? [];
+      current.push({ category: row.category, totalCents: row.totalCents });
+      byMonth.set(row.month, current.sort((a, b) => b.totalCents - a.totalCents));
+    }
+
+    return formatSlackAnswer({
+      answer: [
+        "Total club spend per month by category:",
+        ...months.map((month) => {
+          const categories = byMonth.get(month) ?? [];
+          if (categories.length === 0) return `• ${month}: $0.00`;
+          return `• ${month}: ${categories.map((row) => `${row.category} $${(row.totalCents / 100).toFixed(2)}`).join(", ")}`;
+        }),
+      ].join("\n"),
+      evidenceBullets: [
+        `Grouped \`purchase_logs.amount_cents\` by month and \`purchase_logs.category\` across ${params.accessibleTeams.length} accessible teams.`,
+        startDateFromContext ? `Applied start-date filter from ${startDateFromContext.slice(0, 10)} onward.` : "Included months through the current month.",
+      ],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates and stored categories.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
   if (looksLikeClubMonthlySpendQuestion(params.normalizedPrompt)) {
-    const startDate = inferMonthlyStartDate(params.prompt);
+    const startDate = startDateFromContext;
     const spendRows = await getMonthlySpendForTeams({
       teamIds: params.accessibleTeams.map((team) => team.id),
       startDate,

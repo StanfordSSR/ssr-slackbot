@@ -670,6 +670,41 @@ export async function getMonthlySpendForTeams(params: {
     }));
 }
 
+export async function getMonthlySpendByCategoryForTeams(params: {
+  teamIds: string[];
+  startDate?: string | null;
+}) {
+  let query = supabase
+    .from("purchase_logs")
+    .select("team_id, amount_cents, purchased_at, category")
+    .in("team_id", params.teamIds)
+    .order("purchased_at", { ascending: true });
+
+  if (params.startDate) {
+    query = query.gte("purchased_at", params.startDate);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const byMonthCategory = new Map<string, number>();
+  for (const row of data ?? []) {
+    const purchasedAt = typeof row.purchased_at === "string" ? row.purchased_at : null;
+    if (!purchasedAt) continue;
+    const monthKey = purchasedAt.slice(0, 7);
+    const category = typeof row.category === "string" && row.category.trim() ? row.category.trim() : "Uncategorized";
+    const key = `${monthKey}:::${category}`;
+    byMonthCategory.set(key, (byMonthCategory.get(key) ?? 0) + (row.amount_cents ?? 0));
+  }
+
+  return [...byMonthCategory.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, totalCents]) => {
+      const [month, category] = key.split(":::");
+      return { month, category, totalCents };
+    });
+}
+
 export async function getTeamMonthlyMemberCounts(params: {
   teamId: string;
   months: string[];
