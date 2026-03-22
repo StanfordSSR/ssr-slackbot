@@ -306,7 +306,27 @@ export async function getTeamDirectory(teamIds?: string[]) {
   }
   const { data, error } = await query;
   if (error) throw error;
-  return data ?? [];
+  const rows = (data ?? []) as Array<{ id: string; name: string; slug: string | null; is_active: boolean }>;
+  if (rows.length === 0) return [];
+
+  const { data: memberships, error: membershipsError } = await supabase
+    .from("team_memberships")
+    .select("team_id")
+    .in("team_id", rows.map((row) => row.id))
+    .eq("is_active", true);
+
+  if (membershipsError) throw membershipsError;
+
+  const counts = new Map<string, number>();
+  for (const membership of memberships ?? []) {
+    const teamId = membership.team_id as string;
+    counts.set(teamId, (counts.get(teamId) ?? 0) + 1);
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    active_member_count: counts.get(row.id) ?? 0,
+  }));
 }
 
 export async function getPurchaseLogs(params: {

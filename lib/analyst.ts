@@ -72,6 +72,7 @@ export async function runAnalystSession(params: {
     };
   }
 
+  const promptConstraints = inferPromptConstraints(params.prompt);
   const accessibleTeams = await getAccessibleTeamScope(params.caller.profileId, params.caller.isAdmin);
   const scopeKey = params.caller.isAdmin ? "admin:all" : accessibleTeams.map((team) => team.id).sort().join(",");
   const contextVersion = await getContextSourceVersionKey();
@@ -142,6 +143,7 @@ export async function runAnalystSession(params: {
       tools: plan.structuredTools,
       allowedTeamIds,
       stepOffset: 0,
+      promptConstraints,
     });
 
     if (plan.documentSearches.length > 0) {
@@ -183,6 +185,7 @@ export async function runAnalystSession(params: {
         tools: additionalPlan.structuredTools,
         allowedTeamIds,
         stepOffset: round * 10,
+        promptConstraints,
       });
       if (additionalPlan.documentSearches.length > 0) {
         await reportProgress(params.onProgress, "reviewing_documents", describeDocumentProgress(additionalPlan.documentSearches));
@@ -255,12 +258,13 @@ async function executePlanTools(params: {
   tools: PlannerToolCall[];
   allowedTeamIds: string[];
   stepOffset: number;
+  promptConstraints: { days?: number };
 }) {
   const cappedTools = params.tools.slice(0, 6);
   for (let index = 0; index < cappedTools.length; index += 1) {
     const toolCall = cappedTools[index];
     const startedAt = Date.now();
-    const parsedParams = parseToolParams(toolCall.paramsJson);
+    const parsedParams = applyPromptConstraints(parseToolParams(toolCall.paramsJson), params.promptConstraints);
     const output = await runStructuredTool(toolCall.tool, parsedParams, params.allowedTeamIds);
     const durationMs = Date.now() - startedAt;
 
@@ -405,6 +409,26 @@ function parseToolParams(paramsJson: string) {
     }
   } catch {}
   return {};
+}
+
+function inferPromptConstraints(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const explicitDays = lower.match(/last\s+(\d{1,3})\s+days?/);
+  if (explicitDays) {
+    return { days: Number(explicitDays[1]) };
+  }
+  if (/\blast quarter\b/.test(lower)) return { days: 90 };
+  if (/\blast month\b/.test(lower)) return { days: 30 };
+  if (/\blast year\b/.test(lower)) return { days: 365 };
+  return {};
+}
+
+function applyPromptConstraints(params: Record<string, unknown>, constraints: { days?: number }) {
+  const next = { ...params };
+  if (next.days == null && constraints.days != null) {
+    next.days = constraints.days;
+  }
+  return next;
 }
 
 function normalizePrompt(prompt: string) {
