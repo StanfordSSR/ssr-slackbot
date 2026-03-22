@@ -14,6 +14,7 @@ import {
   getPurchaseLogs,
   getRecentReports,
   getTeamDirectory,
+  getTeamMonthlySpend,
   getTeamSpendSummary,
   getVendorSummary,
   rankTeamsByFundraisingFit,
@@ -75,6 +76,14 @@ export async function runAnalystSession(params: {
 
   const promptConstraints = inferPromptConstraints(params.prompt);
   const accessibleTeams = await getAccessibleTeamScope(params.caller.profileId, params.caller.isAdmin);
+  const deterministic = await maybeHandleDeterministicPrompt({
+    prompt: params.prompt,
+    normalizedPrompt,
+    accessibleTeams,
+  });
+  if (deterministic) {
+    return deterministic;
+  }
   const scopeKey = params.caller.isAdmin ? "admin:all" : accessibleTeams.map((team) => team.id).sort().join(",");
   const contextVersion = await getContextSourceVersionKey();
   const cacheKey = createHash("sha1").update(`${normalizedPrompt}|${scopeKey}|${contextVersion}`).digest("hex");
@@ -636,6 +645,52 @@ function normalizePrompt(prompt: string) {
   return prompt.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function matchTeamFromPrompt(normalizedPrompt: string, teams: Array<{ id: string; name: string }>) {
+  const compactPrompt = normalizedPrompt.replace(/[^a-z0-9]/g, "");
+  return (
+    teams.find((team) => normalizedPrompt.includes(team.name.toLowerCase())) ??
+    teams.find((team) => compactPrompt.includes(team.name.toLowerCase().replace(/[^a-z0-9]/g, ""))) ??
+    null
+  );
+}
+
+function isTeamSizeQuestion(normalizedPrompt: string) {
+  return /(how many|# of|number of).*(people|ppl|members|students)/.test(normalizedPrompt);
+}
+
+function isMonthlySpendQuestion(normalizedPrompt: string) {
+  return /(monthly|per month|each month|by month).*(spend|spent|expenses|purchases|total)/.test(normalizedPrompt)
+    || /(spend|spent|expenses|purchases|total).*(monthly|per month|each month|by month)/.test(normalizedPrompt);
+}
+
+function inferMonthlyStartDate(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const iso = lower.match(/\b(20\d{2})-(\d{2})(?:-(\d{2}))?\b/);
+  if (iso) {
+    return `${iso[1]}-${iso[2]}-${iso[3] ?? "01"}`;
+  }
+
+  const monthYear = lower.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b/);
+  if (!monthYear) return null;
+
+  const monthMap: Record<string, string> = {
+    january: "01",
+    february: "02",
+    march: "03",
+    april: "04",
+    may: "05",
+    june: "06",
+    july: "07",
+    august: "08",
+    september: "09",
+    october: "10",
+    november: "11",
+    december: "12",
+  };
+
+  return `${monthYear[2]}-${monthMap[monthYear[1]]}-01`;
+}
+
 function accumulateUsage(usage: UsageTotals, increment: { inputTokens: number; outputTokens: number }) {
   usage.inputTokens += increment.inputTokens;
   usage.outputTokens += increment.outputTokens;
@@ -661,6 +716,58 @@ function formatSlackAnswer(params: AnalystAnswer): AnalystAnswer {
 
 function shouldUseLightweightReply(normalizedPrompt: string) {
   return LIGHTWEIGHT_PATTERNS.some((pattern) => pattern.test(normalizedPrompt));
+}
+
+async function maybeHandleDeterministicPrompt(params: {
+  prompt: string;
+  normalizedPrompt: string;
+  accessibleTeams: Array<{ id: string; name: string }>;
+}) {
+  const matchedTeam = matchTeamFromPrompt(params.normalizedPrompt, params.accessibleTeams);
+  if (!matchedTeam) return null;
+
+  if (isTeamSizeQuestion(params.normalizedPrompt)) {
+    const rows = await getTeamDirectory([matchedTeam.id]);
+    const team = rows[0];
+    const count = team?.active_member_count ?? 0;
+    return formatSlackAnswer({
+      answer: `${matchedTeam.name} has ${count} rostered member${count === 1 ? "" : "s"}.`,
+      evidenceBullets: [`Counted ${count} row${count === 1 ? "" : "s"} in \`public.team_roster_members\` for ${matchedTeam.name}.`],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
+  if (isMonthlySpendQuestion(params.normalizedPrompt)) {
+    const startDate = inferMonthlyStartDate(params.prompt);
+    const rows = await getTeamMonthlySpend({
+      teamId: matchedTeam.id,
+      startDate,
+    });
+
+    const answer =
+      rows.length === 0
+        ? `I don’t see any logged purchases for ${matchedTeam.name}${startDate ? ` since ${startDate.slice(0, 7)}` : ""}.`
+        : [`${matchedTeam.name} monthly spend:`, ...rows.map((row) => `• ${row.month}: $${(row.totalCents / 100).toFixed(2)}`)].join("\n");
+
+    return formatSlackAnswer({
+      answer,
+      evidenceBullets: [
+        `Summed \`purchase_logs.amount_cents\` by month using \`purchase_logs.purchased_at\` for ${matchedTeam.name}.`,
+        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Used all available logged purchases for the team.",
+      ],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
+  return null;
 }
 
 async function reportProgress(
