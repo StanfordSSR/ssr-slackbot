@@ -14,6 +14,7 @@ import {
   getPurchaseLogs,
   getRecentReports,
   getTeamDirectory,
+  getTeamMonthlyMemberCounts,
   getTeamMonthlySpend,
   getTeamSpendSummary,
   getVendorSummary,
@@ -727,6 +728,10 @@ function isMonthlySpendQuestion(normalizedPrompt: string) {
     || /(spend|spent|expenses|purchases|total).*(monthly|per month|each month|by month)/.test(normalizedPrompt);
 }
 
+function isPerPersonQuestion(normalizedPrompt: string) {
+  return /(per person|per member|on average|average per person|divide by member count|divide by roster)/.test(normalizedPrompt);
+}
+
 function inferMonthlyStartDate(prompt: string) {
   const lower = prompt.toLowerCase();
   const iso = lower.match(/\b(20\d{2})-(\d{2})(?:-(\d{2}))?\b/);
@@ -734,25 +739,50 @@ function inferMonthlyStartDate(prompt: string) {
     return `${iso[1]}-${iso[2]}-${iso[3] ?? "01"}`;
   }
 
-  const monthYear = lower.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b/);
+  const monthYear = lower.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(20\d{2})\b/);
   if (!monthYear) return null;
 
   const monthMap: Record<string, string> = {
     january: "01",
+    jan: "01",
     february: "02",
+    feb: "02",
     march: "03",
+    mar: "03",
     april: "04",
+    apr: "04",
     may: "05",
     june: "06",
+    jun: "06",
     july: "07",
+    jul: "07",
     august: "08",
+    aug: "08",
     september: "09",
+    sep: "09",
     october: "10",
+    oct: "10",
     november: "11",
+    nov: "11",
     december: "12",
+    dec: "12",
   };
 
   return `${monthYear[2]}-${monthMap[monthYear[1]]}-01`;
+}
+
+function buildMonthRange(startDate: string, endDate: Date) {
+  const start = new Date(`${startDate.slice(0, 7)}-01T00:00:00.000Z`);
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
+  const months: string[] = [];
+  const cursor = new Date(start);
+
+  while (cursor <= end) {
+    months.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`);
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+
+  return months;
 }
 
 function accumulateUsage(usage: UsageTotals, increment: { inputTokens: number; outputTokens: number }) {
@@ -807,24 +837,56 @@ async function maybeHandleDeterministicPrompt(params: {
 
   if (isMonthlySpendQuestion(params.normalizedPrompt)) {
     const startDate = inferMonthlyStartDate(params.prompt);
-    const rows = await getTeamMonthlySpend({
+    const spendRows = await getTeamMonthlySpend({
       teamId: matchedTeam.id,
       startDate,
     });
+    const months = buildMonthRange(
+      startDate ?? `${spendRows[0]?.month ?? new Date().toISOString().slice(0, 7)}-01`,
+      new Date(),
+    );
+    const perPerson = isPerPersonQuestion(params.normalizedPrompt);
+    const spendByMonth = new Map(spendRows.map((row) => [row.month, row.totalCents]));
+    const memberCounts = perPerson
+      ? await getTeamMonthlyMemberCounts({
+          teamId: matchedTeam.id,
+          months,
+        })
+      : null;
+    const memberCountByMonth = new Map(memberCounts?.counts.map((row) => [row.month, row.memberCount]) ?? []);
 
     const answer =
-      rows.length === 0
+      spendRows.length === 0
         ? `I don’t see any logged purchases for ${matchedTeam.name}${startDate ? ` since ${startDate.slice(0, 7)}` : ""}.`
-        : [`${matchedTeam.name} monthly spend:`, ...rows.map((row) => `• ${row.month}: $${(row.totalCents / 100).toFixed(2)}`)].join("\n");
+        : [
+            perPerson ? `${matchedTeam.name} monthly spend per person:` : `${matchedTeam.name} monthly spend:`,
+            ...months.map((month) => {
+              const totalCents = spendByMonth.get(month) ?? 0;
+              if (!perPerson) {
+                return `• ${month}: $${(totalCents / 100).toFixed(2)}`;
+              }
+              const members = Math.max(1, memberCountByMonth.get(month) ?? 1);
+              return `• ${month}: $${(totalCents / 100).toFixed(2)} total, $${(totalCents / 100 / members).toFixed(2)} per person (${members} members)`;
+            }),
+          ].join("\n");
 
     return formatSlackAnswer({
       answer,
       evidenceBullets: [
         `Summed \`purchase_logs.amount_cents\` by month using \`purchase_logs.purchased_at\` for ${matchedTeam.name}.`,
-        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Used all available logged purchases for the team.",
+        perPerson
+          ? memberCounts?.method === "historical_roster"
+            ? "Estimated each month's divisor from historical `team_roster_members` join/leave dates."
+            : memberCounts?.method === "joined_only"
+              ? "Estimated each month's divisor from `team_roster_members` join dates; no leave-date field was available."
+              : "Used the current `team_roster_members` count for each month because no historical roster date field was available."
+          : "Reported raw monthly totals only.",
+        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Included months through the current month.",
       ],
       whyItMatters: null,
-      confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates.",
+      confidenceLine: perPerson
+        ? "Confidence: High for spend totals; member-count confidence depends on the historical roster fields available in `team_roster_members`."
+        : "Confidence: High for logged purchases because this is a direct aggregation over purchase dates.",
       estimatedCostUsd: 0.001,
       costTier: "light",
       modelTier: "mini",

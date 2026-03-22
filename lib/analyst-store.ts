@@ -637,6 +637,89 @@ export async function getTeamMonthlySpend(params: {
     }));
 }
 
+export async function getTeamMonthlyMemberCounts(params: {
+  teamId: string;
+  months: string[];
+}) {
+  const liveColumns = await getLiveSchemaColumns().catch(() => []);
+  const rosterColumns = liveColumns
+    .filter((column) => column.schema_name === "public" && column.table_name === "team_roster_members")
+    .map((column) => column.column_name);
+
+  const hasIsActive = rosterColumns.includes("is_active");
+  const joinColumn = ["joined_at", "start_date", "created_at", "added_at"].find((column) => rosterColumns.includes(column)) ?? null;
+  const leaveColumn = ["left_at", "end_date", "removed_at", "inactive_at"].find((column) => rosterColumns.includes(column)) ?? null;
+
+  const currentCount = await getCurrentRosterCount(params.teamId, hasIsActive);
+  if (!joinColumn) {
+    return {
+      counts: params.months.map((month) => ({ month, memberCount: currentCount })),
+      method: "current_roster_only" as const,
+    };
+  }
+
+  const selectColumns = ["team_id", joinColumn];
+  if (leaveColumn) selectColumns.push(leaveColumn);
+  if (hasIsActive) selectColumns.push("is_active");
+
+  const { data, error } = await supabase
+    .from("team_roster_members")
+    .select(selectColumns.join(", "))
+    .eq("team_id", params.teamId);
+
+  if (error) {
+    return {
+      counts: params.months.map((month) => ({ month, memberCount: currentCount })),
+      method: "current_roster_only" as const,
+    };
+  }
+
+  const rows = ((data ?? []) as unknown) as Array<Record<string, unknown>>;
+  const counts = params.months.map((month) => {
+    const monthEnd = getMonthEndIso(month);
+    let memberCount = 0;
+
+    for (const row of rows) {
+      const joinedAt = parseDateValue(row[joinColumn]);
+      const leftAt = leaveColumn ? parseDateValue(row[leaveColumn]) : null;
+      if (!joinedAt || joinedAt > monthEnd) continue;
+      if (leftAt && leftAt <= monthEnd) continue;
+      memberCount += 1;
+    }
+
+    return {
+      month,
+      memberCount: memberCount || currentCount,
+    };
+  });
+
+  return {
+    counts,
+    method: leaveColumn ? ("historical_roster" as const) : ("joined_only" as const),
+  };
+}
+
+async function getCurrentRosterCount(teamId: string, hasIsActive: boolean) {
+  let query = supabase.from("team_roster_members").select("team_id").eq("team_id", teamId);
+  if (hasIsActive) {
+    query = query.eq("is_active", true);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []).length;
+}
+
+function parseDateValue(value: unknown) {
+  if (typeof value !== "string") return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : new Date(time);
+}
+
+function getMonthEndIso(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, monthNumber, 0, 23, 59, 59, 999));
+}
+
 export async function getTeamSpendSummary(params: { teamIds: string[]; days?: number }) {
   const rows = await getPurchaseLogs({ teamIds: params.teamIds, days: params.days, limit: 500 });
   const byTeam = new Map<string, { teamId: string; totalCents: number; count: number; categories: Record<string, number> }>();
