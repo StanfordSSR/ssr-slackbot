@@ -131,6 +131,14 @@ function getModelName(tier: ModelTier) {
   return tier === "deep" ? "gpt-5.1" : "gpt-5-mini";
 }
 
+function choosePlannerModel(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const looksStructured =
+    /(sql|schema|table|column|database|supabase|query|join|group by|team_roster_members|purchase_logs)/.test(lower)
+    || /(budget|report|finance|audit|vendor|spend|expense|monthly|per person|member count)/.test(lower);
+  return looksStructured ? "gpt-5.1" : "gpt-5-mini";
+}
+
 function safeUsage(response: unknown) {
   const usage = (response as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
   return {
@@ -153,7 +161,7 @@ export async function planAnalystQuestion(input: {
       : "(no restricted team access)";
 
   const response = await client.responses.parse({
-    model: "gpt-5-mini",
+    model: choosePlannerModel(input.prompt),
     input: [
       {
         role: "system",
@@ -201,7 +209,7 @@ export async function decideAnalystFollowUp(input: {
     .join("\n");
 
   const response = await client.responses.parse({
-    model: "gpt-5-mini",
+    model: choosePlannerModel(input.prompt),
     input: [
       {
         role: "system",
