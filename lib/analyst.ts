@@ -758,7 +758,7 @@ function isMonthlySpendQuestion(normalizedPrompt: string) {
 }
 
 function isClubWideQuestion(normalizedPrompt: string) {
-  return /(club|overall|all teams|whole club|organization|org-wide|org wide|total club)/.test(normalizedPrompt);
+  return /(ssr|club|overall|all teams|whole club|organization|org-wide|org wide|total club)/.test(normalizedPrompt);
 }
 
 function looksLikeClubMonthlySpendQuestion(normalizedPrompt: string) {
@@ -829,6 +829,16 @@ function inferMonthlyStartDate(prompt: string) {
     const monthValue = Number(monthMap[lastMonthYear[1]]);
     const year = monthValue <= currentMonth ? currentYear - 1 : currentYear;
     return `${year}-${monthMap[lastMonthYear[1]]}-01`;
+  }
+
+  const bareMonth = lower.match(/\bsince\s+(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\b/);
+  if (bareMonth) {
+    const now = new Date();
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth() + 1;
+    const monthValue = Number(monthMap[bareMonth[1]]);
+    const year = monthValue <= currentMonth ? currentYear : currentYear - 1;
+    return `${year}-${monthMap[bareMonth[1]]}-01`;
   }
 
   const monthYear = lower.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(20\d{2})\b/);
