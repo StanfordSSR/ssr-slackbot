@@ -5,16 +5,15 @@ import { getEnv } from "@/lib/env";
 import { after } from "next/server";
 import { buildAmazonOAuthLink, syncActiveAmazonAccountForDays } from "@/lib/amazon-orders";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
+import { syncProfileSlackUsers } from "@/lib/slack-users";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
-import { getSlackUserIdentity, lookupSlackUserIdByEmail, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
+import { getSlackUserIdentity, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
 import {
   findProfileByEmail,
   getActiveAmazonAccountLink,
   getActiveGmailAccountLinksForProfile,
   getLeadTeamsForUser,
-  getProfilesForSlackSync,
   getTeamById,
-  updateProfileSlackUserId,
 } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -301,34 +300,12 @@ async function handleSlackUserSyncCommand(params: { slackUserId: string; respons
   }
 
   after(async () => {
-    let matched = 0;
-    let failed = 0;
-    let alreadyLinked = 0;
-
     try {
-      const profiles = await getProfilesForSlackSync();
-
-      for (const entry of profiles) {
-        const email = entry.email?.trim().toLowerCase();
-        if (!email) continue;
-
-        if (entry.slack_user_id) {
-          alreadyLinked += 1;
-          continue;
-        }
-
-        try {
-          const slackUserId = await lookupSlackUserIdByEmail(email);
-          await updateProfileSlackUserId({ profileId: entry.id, slackUserId });
-          matched += 1;
-        } catch {
-          failed += 1;
-        }
-      }
+      const result = await syncProfileSlackUsers();
 
       await postSlackResponse(params.responseUrl, {
         replace_original: true,
-        text: `Slack user sync finished. Added ${matched}, already linked ${alreadyLinked}, failed ${failed}.`,
+        text: `Slack user sync finished. Added ${result.matched}, already linked ${result.alreadyLinked}, failed ${result.failed}.`,
       });
     } catch (error) {
       await postDelayedSlackResponse(
