@@ -5,20 +5,6 @@ import { AnalystAnswer, AnalystEvidence, AnalystPlan, CostTier, ModelTier } from
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const toolParamValueSchema: z.ZodType<
-  string | number | boolean | null | string[] | number[] | boolean[]
-> = z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-  z.array(z.string()),
-  z.array(z.number()),
-  z.array(z.boolean()),
-]);
-
-const toolParamsSchema = z.record(z.string(), toolParamValueSchema);
-
 const plannerSchema = z.object({
   route: z.enum(["casual", "org_profile", "policy", "finance", "fundraising", "audit", "mixed", "needs_web"]),
   answerCasually: z.boolean(),
@@ -49,7 +35,9 @@ const plannerSchema = z.object({
           "find_budget_pressure_signals",
         ]),
         rationale: z.string(),
-        params: toolParamsSchema,
+        paramsJson: z
+          .string()
+          .describe("JSON object string for tool parameters. Use {} when no params are needed."),
       }),
     )
     .max(6),
@@ -89,7 +77,9 @@ const followUpSchema = z.object({
           "find_budget_pressure_signals",
         ]),
         rationale: z.string(),
-        params: toolParamsSchema,
+        paramsJson: z
+          .string()
+          .describe("JSON object string for tool parameters. Use {} when no params are needed."),
       }),
     )
     .max(2),

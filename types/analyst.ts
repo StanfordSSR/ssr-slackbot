@@ -32,7 +32,7 @@ export type ToolName =
 export type PlannerToolCall = {
   tool: ToolName;
   rationale: string;
-  params: Record<string, unknown>;
+  paramsJson: string;
 };
 
 export type DocumentSearchPlan = {

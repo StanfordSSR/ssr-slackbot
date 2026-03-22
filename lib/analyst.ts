@@ -215,14 +215,15 @@ async function executePlanTools(params: {
   for (let index = 0; index < cappedTools.length; index += 1) {
     const toolCall = cappedTools[index];
     const startedAt = Date.now();
-    const output = await runStructuredTool(toolCall.tool, toolCall.params, params.allowedTeamIds);
+    const parsedParams = parseToolParams(toolCall.paramsJson);
+    const output = await runStructuredTool(toolCall.tool, parsedParams, params.allowedTeamIds);
     const durationMs = Date.now() - startedAt;
 
     await recordQuestionToolCall({
       sessionId: params.sessionId,
       stepIndex: params.stepOffset + index,
       toolName: toolCall.tool,
-      inputJson: toolCall.params,
+      inputJson: parsedParams,
       outputJson: { data: output },
       durationMs,
     });
@@ -238,8 +239,8 @@ async function executePlanTools(params: {
       sourceKind: "structured_tool",
       title: toolCall.tool,
       citationText,
-      metadata: { rationale: toolCall.rationale },
-    });
+          metadata: { rationale: toolCall.rationale },
+        });
   }
 }
 
@@ -349,6 +350,16 @@ function compactToolOutput(toolName: string, output: unknown) {
 function sanitizeTeamIds(input: unknown, allowedTeamIds: string[]) {
   const requested = Array.isArray(input) ? input.filter((item): item is string => typeof item === "string") : [];
   return requested.filter((teamId) => allowedTeamIds.includes(teamId));
+}
+
+function parseToolParams(paramsJson: string) {
+  try {
+    const parsed = JSON.parse(paramsJson);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {}
+  return {};
 }
 
 function normalizePrompt(prompt: string) {
