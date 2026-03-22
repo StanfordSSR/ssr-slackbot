@@ -120,6 +120,13 @@ const sqlRepairSchema = z.object({
   rationale: z.string(),
 });
 
+const directSqlSchema = z.object({
+  shouldUseDirectSql: z.boolean(),
+  rationale: z.string(),
+  sql: z.string(),
+  expectedAnswerUse: z.string(),
+});
+
 export type UsageTotals = {
   inputTokens: number;
   outputTokens: number;
@@ -341,6 +348,57 @@ export async function repairAnalystSql(input: {
 
   return {
     repair: response.output_parsed,
+    usage: safeUsage(response),
+  };
+}
+
+export async function planDirectSqlQuestion(input: {
+  prompt: string;
+  history: Array<{ speaker: string; text: string }>;
+  accessibleTeams: Array<{ id: string; name: string }>;
+  schemaCatalogText: string;
+}) {
+  const historyText =
+    input.history.length > 0 ? input.history.map((message) => `${message.speaker}: ${message.text}`).join("\n") : "(none)";
+  const teamsText =
+    input.accessibleTeams.length > 0
+      ? input.accessibleTeams.map((team) => `${team.name} (${team.id})`).join(", ")
+      : "(no restricted team access)";
+
+  const response = await client.responses.parse({
+    model: "gpt-5.1",
+    input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You decide whether an SSR Slack question should be answered directly from structured database SQL. Use direct SQL when the question is primarily about counts, rankings, comparisons, rollups, categories, purchases, budgets, reports, roster sizes, or other factual Supabase-backed metrics. Return one strong read-only SQL query when direct SQL is appropriate. Output bare SQL only, no prose, no markdown fences. Use explicit public.table names. For team-size use public.team_roster_members. For spend timing use purchase_logs.purchased_at. For team-scoped queries project team_id in the final select when possible.",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `Accessible teams: ${teamsText}\nSchema catalog:\n${input.schemaCatalogText}\n\nRecent Slack context:\n${historyText}\n\nQuestion:\n${input.prompt}`,
+          },
+        ],
+      },
+    ],
+    text: {
+      format: zodTextFormat(directSqlSchema, "direct_sql_plan"),
+    },
+  });
+
+  if (!response.output_parsed) {
+    throw new Error("Direct SQL planner did not return a parsed result.");
+  }
+
+  return {
+    plan: response.output_parsed,
     usage: safeUsage(response),
   };
 }

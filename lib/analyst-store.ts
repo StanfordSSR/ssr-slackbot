@@ -705,6 +705,27 @@ export async function getMonthlySpendByCategoryForTeams(params: {
     });
 }
 
+export async function getTopPurchasesForTeams(params: {
+  teamIds: string[];
+  startDate?: string | null;
+  limit?: number;
+}) {
+  let query = supabase
+    .from("purchase_logs")
+    .select("id, team_id, amount_cents, description, purchased_at, person_name, payment_method, category")
+    .in("team_id", params.teamIds)
+    .order("amount_cents", { ascending: false })
+    .limit(params.limit ?? 10);
+
+  if (params.startDate) {
+    query = query.gte("purchased_at", params.startDate);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function getTeamMonthlyMemberCounts(params: {
   teamId: string;
   months: string[];

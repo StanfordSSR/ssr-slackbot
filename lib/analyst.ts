@@ -13,6 +13,7 @@ import {
   getContextSourceVersionKey,
   getMonthlySpendByCategoryForTeams,
   getMonthlySpendForTeams,
+  getTopPurchasesForTeams,
   getPurchaseLogs,
   getRecentReports,
   getTeamDirectory,
@@ -32,6 +33,7 @@ import {
   decideAnalystFollowUp,
   estimateAnalysisCost,
   planAnalystQuestion,
+  planDirectSqlQuestion,
   repairAnalystSql,
   synthesizeAnalystAnswer,
   UsageTotals,
@@ -125,6 +127,31 @@ export async function runAnalystSession(params: {
   try {
     await reportProgress(params.onProgress, "routing", "routing your question");
     const schemaCatalogText = await getSchemaCatalogText();
+    const allowedTeamIds = accessibleTeams.map((team) => team.id);
+    const directAnswer = await tryDirectSqlAnswer({
+      sessionId,
+      prompt: params.prompt,
+      history: params.history ?? [],
+      accessibleTeams: accessibleTeams.map((team) => ({ id: team.id, name: team.name })),
+      allowedTeamIds,
+      isAdmin: params.caller.isAdmin,
+      schemaCatalogText,
+      usage,
+      onProgress: params.onProgress,
+    });
+    if (directAnswer) {
+      await completeQuestionSession({
+        sessionId,
+        finalAnswer: directAnswer.answer,
+        confidenceLabel: directAnswer.confidenceLine,
+        modelTier: directAnswer.modelTier,
+        costTier: directAnswer.costTier,
+        estimatedCostUsd: directAnswer.estimatedCostUsd,
+        usage: usage as unknown as Record<string, unknown>,
+      });
+      return directAnswer;
+    }
+
     const planned = await planAnalystQuestion({
       prompt: params.prompt,
       history: params.history ?? [],
@@ -137,7 +164,6 @@ export async function runAnalystSession(params: {
     await updateQuestionSessionPlan(sessionId, plan.route, plan as unknown as Record<string, unknown>);
 
     const evidence: AnalystEvidence[] = [];
-    const allowedTeamIds = accessibleTeams.map((team) => team.id);
 
     if (plan.needsOrgProfile || plan.route === "org_profile" || plan.route === "casual") {
       await reportProgress(params.onProgress, "reviewing_org_profile", "reviewing SSR org context");
@@ -742,6 +768,18 @@ function looksLikeClubMonthlySpendQuestion(normalizedPrompt: string) {
   return hasClubScope && hasSpendIntent && hasMonthIntent;
 }
 
+function looksLikeBiggestPurchasesQuestion(normalizedPrompt: string) {
+  const hasPurchaseIntent = /(purchase|purchases|expense|expenses|spent)/.test(normalizedPrompt);
+  const hasRankingIntent = /(biggest|largest|top|highest|big|major)/.test(normalizedPrompt);
+  return hasPurchaseIntent && hasRankingIntent;
+}
+
+function looksLikeStructuredDataQuestion(normalizedPrompt: string) {
+  return /(purchase|purchases|expense|expenses|spent|spend|budget|budgets|report|reports|vendor|vendors|receipt|receipts|team|teams|member|members|roster|count|counts|category|categories|monthly|month|year|finance|financial|audit)/.test(
+    normalizedPrompt,
+  );
+}
+
 function isCategorySplitQuestion(normalizedPrompt: string) {
   return /(split by category|by category|category of expense|expense category|categories)/.test(normalizedPrompt);
 }
@@ -799,6 +837,25 @@ function inferMonthlyStartDate(prompt: string) {
   return `${monthYear[2]}-${monthMap[monthYear[1]]}-01`;
 }
 
+function inferYearStartDate(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const now = new Date();
+
+  if (/\bthis year\b|\bthis yesr\b|\bthis yr\b/.test(lower)) {
+    return `${now.getUTCFullYear()}-01-01`;
+  }
+  if (/\blast year\b/.test(lower)) {
+    return `${now.getUTCFullYear() - 1}-01-01`;
+  }
+
+  const explicitYear = lower.match(/\b(20\d{2})\b/);
+  if (explicitYear) {
+    return `${explicitYear[1]}-01-01`;
+  }
+
+  return null;
+}
+
 function buildMonthRange(startDate: string, endDate: Date) {
   const start = new Date(`${startDate.slice(0, 7)}-01T00:00:00.000Z`);
   const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
@@ -838,6 +895,136 @@ function formatSlackAnswer(params: AnalystAnswer): AnalystAnswer {
 
 function shouldUseLightweightReply(normalizedPrompt: string) {
   return LIGHTWEIGHT_PATTERNS.some((pattern) => pattern.test(normalizedPrompt));
+}
+
+async function tryDirectSqlAnswer(params: {
+  sessionId: string;
+  prompt: string;
+  history: Array<{ speaker: string; text: string }>;
+  accessibleTeams: Array<{ id: string; name: string }>;
+  allowedTeamIds: string[];
+  isAdmin: boolean;
+  schemaCatalogText: string;
+  usage: UsageTotals;
+  onProgress?: (stage: AnalystProgressStage, detail: string) => Promise<void> | void;
+}) {
+  if (!looksLikeStructuredDataQuestion(normalizePrompt(params.prompt))) {
+    return null;
+  }
+
+  await reportProgress(params.onProgress, "running_tools", "checking schema for relevant tables");
+  const directPlan = await planDirectSqlQuestion({
+    prompt: params.prompt,
+    history: params.history,
+    accessibleTeams: params.accessibleTeams,
+    schemaCatalogText: params.schemaCatalogText,
+  });
+  accumulateUsage(params.usage, directPlan.usage);
+
+  if (!directPlan.plan.shouldUseDirectSql || !directPlan.plan.sql.trim()) {
+    return null;
+  }
+
+  const sqlPlan = {
+    rationale: directPlan.plan.rationale,
+    sql: directPlan.plan.sql,
+    expectedAnswerUse: directPlan.plan.expectedAnswerUse,
+  };
+
+  await reportProgress(params.onProgress, "running_tools", "running finance queries");
+  let sqlResult;
+  try {
+    sqlResult = await validateAndExecuteSql({
+      sessionId: params.sessionId,
+      stepIndex: 900,
+      rationale: sqlPlan.rationale,
+      sql: sqlPlan.sql,
+      isAdmin: params.isAdmin,
+      allowedTeamIds: params.allowedTeamIds,
+    });
+  } catch (error) {
+    try {
+      const repaired = await repairAnalystSql({
+        prompt: params.prompt,
+        sql: sqlPlan.sql,
+        errorText: error instanceof Error ? error.message : String(error),
+        schemaCatalogText: params.schemaCatalogText,
+        accessibleTeams: params.accessibleTeams,
+      });
+      accumulateUsage(params.usage, repaired.usage);
+      sqlResult = await validateAndExecuteSql({
+        sessionId: params.sessionId,
+        stepIndex: 901,
+        rationale: `${sqlPlan.rationale} (repaired)`,
+        sql: repaired.repair.sql,
+        isAdmin: params.isAdmin,
+        allowedTeamIds: params.allowedTeamIds,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  const evidence: AnalystEvidence[] = [
+    {
+      sourceKind: "structured_tool",
+      title: `SQL: ${sqlPlan.expectedAnswerUse}`,
+      citationText: compactSqlRows(sqlResult.rows),
+      metadata: {
+        referencedTables: sqlResult.referencedTables,
+        sqlFingerprint: sqlResult.sqlFingerprint,
+      },
+    },
+  ];
+  await addQuestionEvidence({
+    sessionId: params.sessionId,
+    sourceKind: "structured_tool",
+    title: `SQL: ${sqlPlan.expectedAnswerUse}`,
+    citationText: compactSqlRows(sqlResult.rows),
+    metadata: {
+      referencedTables: sqlResult.referencedTables,
+      sqlFingerprint: sqlResult.sqlFingerprint,
+      executedSql: sqlResult.executedSql,
+      directSql: true,
+    },
+  });
+
+  await reportProgress(params.onProgress, "writing_answer", "writing the final answer");
+  const synthesized = await synthesizeAnalystAnswer({
+    prompt: params.prompt,
+    plan: {
+      route: "finance",
+      answerCasually: false,
+      modelTier: "deep",
+      subquestions: [],
+      needsOrgProfile: false,
+      needsStructuredData: true,
+      needsDocuments: false,
+      needsWeb: false,
+      structuredTools: [],
+      sqlQueries: [sqlPlan],
+      documentSearches: [],
+    },
+    orgProfile: null,
+    evidence,
+    modelTier: "deep",
+  });
+  accumulateUsage(params.usage, synthesized.usage);
+
+  const cost = estimateAnalysisCost({
+    usage: params.usage,
+    modelTier: "deep",
+  });
+
+  return formatSlackAnswer({
+    answer: synthesized.answer.answer,
+    evidenceBullets: synthesized.answer.evidenceBullets,
+    whyItMatters: synthesized.answer.whyItMatters,
+    confidenceLine: synthesized.answer.confidenceLine,
+    estimatedCostUsd: cost.estimatedCostUsd,
+    costTier: cost.costTier,
+    modelTier: "deep",
+  });
 }
 
 async function maybeHandleDeterministicPrompt(params: {
@@ -880,6 +1067,39 @@ async function maybeHandleDeterministicPrompt(params: {
       ],
       whyItMatters: null,
       confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates and stored categories.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
+  if (looksLikeBiggestPurchasesQuestion(params.normalizedPrompt) && isClubWideQuestion(params.normalizedPrompt)) {
+    const startDate = inferYearStartDate(params.prompt);
+    const rows = await getTopPurchasesForTeams({
+      teamIds: params.accessibleTeams.map((team) => team.id),
+      startDate,
+      limit: 8,
+    });
+
+    return formatSlackAnswer({
+      answer:
+        rows.length === 0
+          ? `I don’t see any logged club purchases${startDate ? ` since ${startDate.slice(0, 10)}` : ""}.`
+          : [
+              `Biggest club purchases${startDate ? ` since ${startDate.slice(0, 4)}` : ""}:`,
+              ...rows.map((row) => {
+                const amount = typeof row.amount_cents === "number" ? `$${(row.amount_cents / 100).toFixed(2)}` : "$0.00";
+                const date = typeof row.purchased_at === "string" ? row.purchased_at.slice(0, 10) : "unknown date";
+                const description = typeof row.description === "string" && row.description.trim() ? row.description.trim() : "Unnamed purchase";
+                return `• ${date} | ${description} | ${amount}`;
+              }),
+            ].join("\n"),
+      evidenceBullets: [
+        `Ranked \`purchase_logs\` by \`amount_cents\` across ${params.accessibleTeams.length} accessible teams.`,
+        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Used all available logged purchases.",
+      ],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High for logged purchases because this is a direct ranking from the purchase log.",
       estimatedCostUsd: 0.001,
       costTier: "light",
       modelTier: "mini",

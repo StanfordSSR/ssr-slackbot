@@ -2,6 +2,7 @@ import { getEnv } from "@/lib/env";
 import { SlackUserIdentity } from "@/types/receipt";
 
 const slackApiBase = "https://slack.com/api";
+const SLACK_TEXT_LIMIT = 35000;
 
 async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getEnv("SLACK_BOT_TOKEN");
@@ -54,14 +55,14 @@ type PostMessageResponse = {
 export async function postMessage(channel: string, text: string, blocks?: unknown[], threadTs?: string) {
   return slackFetch<PostMessageResponse>("/chat.postMessage", {
     method: "POST",
-    body: JSON.stringify({ channel, text, blocks, thread_ts: threadTs }),
+    body: JSON.stringify({ channel, text: truncateSlackText(text), blocks, thread_ts: threadTs }),
   });
 }
 
 export async function updateMessage(channel: string, ts: string, text: string, blocks?: unknown[]) {
   return slackFetch<PostMessageResponse>("/chat.update", {
     method: "POST",
-    body: JSON.stringify({ channel, ts, text, blocks }),
+    body: JSON.stringify({ channel, ts, text: truncateSlackText(text), blocks }),
   });
 }
 
@@ -100,6 +101,11 @@ export async function postSlackResponse(
 
 export async function postDm(channel: string, text: string, blocks?: unknown[]) {
   return postMessage(channel, text, blocks);
+}
+
+function truncateSlackText(text: string) {
+  if (text.length <= SLACK_TEXT_LIMIT) return text;
+  return `${text.slice(0, SLACK_TEXT_LIMIT - 30).trimEnd()}\n\n[truncated for Slack length]`;
 }
 
 export async function fetchFileInfo(fileId: string) {
