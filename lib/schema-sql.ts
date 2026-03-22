@@ -292,6 +292,9 @@ function inferColumnSemanticRoles(tableName: string, columnName: string) {
   if (tableName === "purchase_logs" && columnName === "purchased_at") roles.push("purchase_time");
   if (tableName === "purchase_logs" && columnName === "receipt_uploaded_at") roles.push("receipt_upload_time");
   if (tableName === "team_roster_members" && /name|email|sunet/i.test(columnName)) roles.push("student_roster_field");
+  if (tableName === "team_roster_members" && (columnName === "joined_year" || columnName === "joined_month")) {
+    roles.push("roster_join_time");
+  }
   return roles;
 }
 
@@ -303,7 +306,9 @@ function inferPreferredTimeColumn(columnNames: string[]) {
 }
 
 function describeTableName(tableName: string) {
-  if (tableName === "team_roster_members") return "Full team roster members, better source of truth for team size than portal memberships.";
+  if (tableName === "team_roster_members") {
+    return "Full team roster members, better source of truth for team size than portal memberships. Prefer joined_year and joined_month for historical monthly membership counts.";
+  }
   if (tableName === "team_memberships") return "Portal user memberships and roles.";
   if (tableName === "purchase_logs") return "Logged team purchases and expense records.";
   return tableName.replace(/_/g, " ");
@@ -333,7 +338,7 @@ function normalizeSqlCandidate(sql: string) {
 function fallbackSchemaCatalogText() {
   return [
     "public.teams scope=org columns=[id:uuid, name:text, slug:text, is_active:boolean]",
-    "public.team_roster_members scope=team roles=team_size columns=[team_id:uuid]",
+    "public.team_roster_members scope=team roles=team_size desc=\"Use joined_year and joined_month for historical membership counts.\" columns=[team_id:uuid, full_name:text, stanford_email:text, joined_month:int4, joined_year:int4, created_at:timestamptz]",
     "public.team_memberships scope=team roles=portal_roles columns=[team_id:uuid, user_id:uuid, team_role:text, is_active:boolean]",
     "public.purchase_logs scope=team time=purchased_at roles=purchase_time|expenses columns=[id:uuid, team_id:uuid, amount_cents:bigint, description:text, purchased_at:timestamptz, person_name:text, payment_method:text, category:text, receipt_uploaded_at:timestamptz]",
     "public.email_receipt_ingestions scope=team columns=[id:uuid, team_id:uuid, subject:text, received_at:timestamptz, status:text]",

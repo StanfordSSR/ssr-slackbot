@@ -647,18 +647,23 @@ export async function getTeamMonthlyMemberCounts(params: {
     .map((column) => column.column_name);
 
   const hasIsActive = rosterColumns.includes("is_active");
+  const hasJoinedYearMonth = rosterColumns.includes("joined_year") && rosterColumns.includes("joined_month");
   const joinColumn = ["joined_at", "start_date", "created_at", "added_at"].find((column) => rosterColumns.includes(column)) ?? null;
   const leaveColumn = ["left_at", "end_date", "removed_at", "inactive_at"].find((column) => rosterColumns.includes(column)) ?? null;
 
   const currentCount = await getCurrentRosterCount(params.teamId, hasIsActive);
-  if (!joinColumn) {
+  if (!joinColumn && !hasJoinedYearMonth) {
     return {
       counts: params.months.map((month) => ({ month, memberCount: currentCount })),
       method: "current_roster_only" as const,
     };
   }
 
-  const selectColumns = ["team_id", joinColumn];
+  const selectColumns = ["team_id"];
+  if (joinColumn) selectColumns.push(joinColumn);
+  if (hasJoinedYearMonth) {
+    selectColumns.push("joined_year", "joined_month");
+  }
   if (leaveColumn) selectColumns.push(leaveColumn);
   if (hasIsActive) selectColumns.push("is_active");
 
@@ -680,7 +685,7 @@ export async function getTeamMonthlyMemberCounts(params: {
     let memberCount = 0;
 
     for (const row of rows) {
-      const joinedAt = parseDateValue(row[joinColumn]);
+      const joinedAt = hasJoinedYearMonth ? parseJoinedYearMonth(row) : joinColumn ? parseDateValue(row[joinColumn]) : null;
       const leftAt = leaveColumn ? parseDateValue(row[leaveColumn]) : null;
       if (!joinedAt || joinedAt > monthEnd) continue;
       if (leftAt && leftAt <= monthEnd) continue;
@@ -695,7 +700,7 @@ export async function getTeamMonthlyMemberCounts(params: {
 
   return {
     counts,
-    method: leaveColumn ? ("historical_roster" as const) : ("joined_only" as const),
+    method: hasJoinedYearMonth || leaveColumn ? ("historical_roster" as const) : ("joined_only" as const),
   };
 }
 
@@ -713,6 +718,13 @@ function parseDateValue(value: unknown) {
   if (typeof value !== "string") return null;
   const time = Date.parse(value);
   return Number.isNaN(time) ? null : new Date(time);
+}
+
+function parseJoinedYearMonth(row: Record<string, unknown>) {
+  const joinedYear = typeof row.joined_year === "number" ? row.joined_year : typeof row.joined_year === "string" ? Number(row.joined_year) : null;
+  const joinedMonth = typeof row.joined_month === "number" ? row.joined_month : typeof row.joined_month === "string" ? Number(row.joined_month) : null;
+  if (!joinedYear || !joinedMonth || joinedMonth < 1 || joinedMonth > 12) return null;
+  return new Date(Date.UTC(joinedYear, joinedMonth - 1, 1, 0, 0, 0, 0));
 }
 
 function getMonthEndIso(month: string) {
