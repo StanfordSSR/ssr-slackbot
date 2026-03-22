@@ -733,6 +733,13 @@ function isClubWideQuestion(normalizedPrompt: string) {
   return /(club|overall|all teams|whole club|organization|org-wide|org wide|total club)/.test(normalizedPrompt);
 }
 
+function looksLikeClubMonthlySpendQuestion(normalizedPrompt: string) {
+  const hasClubScope = isClubWideQuestion(normalizedPrompt);
+  const hasSpendIntent = /(spend|spent|expenses|purchases|total)/.test(normalizedPrompt);
+  const hasMonthIntent = /(monthly|montly|monthy|montjly|per month|each month|by month|month)/.test(normalizedPrompt);
+  return hasClubScope && hasSpendIntent && hasMonthIntent;
+}
+
 function isPerPersonQuestion(normalizedPrompt: string) {
   return /(per person|per member|on average|average per person|divide by member count|divide by roster)/.test(normalizedPrompt);
 }
@@ -832,6 +839,35 @@ async function maybeHandleDeterministicPrompt(params: {
   normalizedPrompt: string;
   accessibleTeams: Array<{ id: string; name: string }>;
 }) {
+  if (looksLikeClubMonthlySpendQuestion(params.normalizedPrompt)) {
+    const startDate = inferMonthlyStartDate(params.prompt);
+    const spendRows = await getMonthlySpendForTeams({
+      teamIds: params.accessibleTeams.map((team) => team.id),
+      startDate,
+    });
+    const months = buildMonthRange(
+      startDate ?? `${spendRows[0]?.month ?? new Date().toISOString().slice(0, 7)}-01`,
+      new Date(),
+    );
+    const spendByMonth = new Map(spendRows.map((row) => [row.month, row.totalCents]));
+
+    return formatSlackAnswer({
+      answer: [
+        "Total club spend per month:",
+        ...months.map((month) => `• ${month}: $${((spendByMonth.get(month) ?? 0) / 100).toFixed(2)}`),
+      ].join("\n"),
+      evidenceBullets: [
+        `Summed \`purchase_logs.amount_cents\` by month using \`purchase_logs.purchased_at\` across ${params.accessibleTeams.length} accessible teams.`,
+        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Included months through the current month.",
+      ],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
   const matchedTeam = matchTeamFromPrompt(params.normalizedPrompt, params.accessibleTeams);
   if (!matchedTeam) return null;
 
