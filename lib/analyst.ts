@@ -392,6 +392,72 @@ async function runStructuredTool(tool: ToolName, params: Record<string, unknown>
 }
 
 function compactToolOutput(toolName: string, output: unknown) {
+  if (toolName === "get_team_directory") {
+    const rows = (output as { rows?: Array<{ name?: string; active_member_count?: number }> }).rows ?? [];
+    if (rows.length > 0) {
+      return rows
+        .map((row) => `${row.name || "Unknown team"}: ${row.active_member_count ?? 0} active members`)
+        .join("; ");
+    }
+  }
+
+  if (toolName === "get_team_spend_summary" || toolName === "compare_team_spend_patterns") {
+    const rows =
+      (output as {
+        rows?: Array<{ teamId?: string; totalCents?: number; count?: number; shareOfSpend?: number; averageCents?: number }>;
+      }).rows ?? [];
+    if (rows.length > 0) {
+      return rows
+        .map((row) => {
+          const total = typeof row.totalCents === "number" ? `$${(row.totalCents / 100).toFixed(2)}` : "unknown total";
+          const count = typeof row.count === "number" ? `${row.count} purchases` : "unknown purchase count";
+          return `${row.teamId || "Unknown team"}: ${total}, ${count}`;
+        })
+        .join("; ");
+    }
+  }
+
+  if (toolName === "get_purchase_log_rows") {
+    const rows =
+      (output as {
+        rows?: Array<{
+          id?: string;
+          team_id?: string;
+          amount_cents?: number;
+          description?: string;
+          purchased_at?: string;
+          person_name?: string | null;
+          payment_method?: string | null;
+          category?: string | null;
+          receipt_not_needed?: boolean | null;
+        }>;
+      }).rows ?? [];
+    if (rows.length > 0) {
+      return rows
+        .slice(0, 20)
+        .map((row) => {
+          const amount = typeof row.amount_cents === "number" ? `$${(row.amount_cents / 100).toFixed(2)}` : "unknown amount";
+          const date = row.purchased_at ? row.purchased_at.slice(0, 10) : "unknown date";
+          const description = (row.description || "Unknown purchase").slice(0, 80);
+          return `${date} | ${description} | ${amount} | team ${row.team_id || "unknown"}`;
+        })
+        .join("; ");
+    }
+  }
+
+  if (toolName === "get_vendor_summary" || toolName === "summarize_vendor_concentration") {
+    const rows = (output as { rows?: Array<{ vendor?: string; totalCents?: number; count?: number; shareOfSpend?: number }> }).rows ?? [];
+    if (rows.length > 0) {
+      return rows
+        .slice(0, 10)
+        .map((row) => {
+          const total = typeof row.totalCents === "number" ? `$${(row.totalCents / 100).toFixed(2)}` : "unknown total";
+          return `${row.vendor || "Unknown vendor"}: ${total}`;
+        })
+        .join("; ");
+    }
+  }
+
   const json = JSON.stringify(output);
   return `${toolName}: ${json.slice(0, 500)}`;
 }
