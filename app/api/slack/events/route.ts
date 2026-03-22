@@ -10,6 +10,8 @@ import {
   postMessage,
   updateMessage,
 } from "@/lib/slack";
+import { runAnalystSession } from "@/lib/analyst";
+import { ingestSlackFileContext, parseAddContextInput } from "@/lib/context-ingestion";
 import { isSupportedReceiptMimeType, toDataUrl, compactExtractionForSlack } from "@/lib/receipt-utils";
 import { answerSlackMention, extractReceiptFromImage } from "@/lib/openai";
 import { receiptReviewBlocks, teamChoiceBlocks } from "@/lib/slack-blocks";
@@ -116,6 +118,12 @@ async function handleMessageEvent(event: NonNullable<SlackEventEnvelope["event"]
     filename: file?.name ?? null,
     mimeType: file?.mimetype ?? null,
   });
+
+  const contextCommand = parseAddContextInput(event.text || "");
+  if (file?.id && !contextCommand.url && /^addcontext\b/i.test((event.text || "").trim())) {
+    await handleContextFileUpload(event, contextCommand.parsed);
+    return;
+  }
 
   if (!file?.id) {
     await postDm(channel, "Send me a receipt image or PDF and I’ll try to log it to your team.");
@@ -243,8 +251,82 @@ async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event
     hasContext: context.length > 0,
   });
   const pendingMessage = await postMessage(channel, "_thinking..._");
-  const reply = await answerSlackMention({ prompt, history: context });
+  const identity = event.user ? await getSlackUserIdentity(event.user) : null;
+  const profile = identity ? await findProfileByEmail(identity.email) : null;
+  const reply =
+    identity && profile
+      ? (
+          await runAnalystSession({
+            caller: {
+              slackUserId: identity.slackUserId,
+              profileId: profile.id,
+              isAdmin: Boolean(profile.is_admin),
+              channelId: channel,
+              threadTs: event.thread_ts || event.ts || null,
+              entrypoint: "mention",
+            },
+            prompt,
+            history: context,
+          })
+        ).answer
+      : await answerSlackMention({ prompt, history: context });
   await updateMessage(channel, pendingMessage.ts, reply);
+}
+
+async function handleContextFileUpload(
+  event: NonNullable<SlackEventEnvelope["event"]>,
+  parsed: ReturnType<typeof parseAddContextInput>["parsed"],
+) {
+  const userId = event.user;
+  const channel = event.channel;
+  const file = event.files?.[0];
+
+  if (!userId || !channel || !file?.id) return;
+
+  const identity = await getSlackUserIdentity(userId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile) {
+    await postDm(channel, `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`);
+    return;
+  }
+
+  const leadTeams = await getLeadTeamsForUser(profile.id);
+  if (!profile.is_admin && leadTeams.length === 0) {
+    await postDm(channel, "Only admins or active team leads can add context files.");
+    return;
+  }
+
+  const fileInfo = await fetchFileInfo(file.id);
+  const slackFile = fileInfo.file as {
+    id: string;
+    mimetype?: string;
+    name?: string;
+    url_private_download?: string;
+  };
+
+  if (!slackFile.url_private_download) {
+    await postDm(channel, "Slack did not provide a downloadable file URL for that context file.");
+    return;
+  }
+
+  await postDm(channel, "Indexing that context file...");
+
+  const fileBytes = await downloadSlackFile(slackFile.url_private_download);
+  const result = await ingestSlackFileContext({
+    linkedByProfileId: profile.id,
+    slackFileId: file.id,
+    title: slackFile.name || file.name || "context-file",
+    mimeType: slackFile.mimetype || file.mimetype || fileBytes.contentType,
+    bytes: fileBytes.arrayBuffer,
+    corpus: parsed.corpus,
+    scope: parsed.scope,
+    teamId: parsed.teamId,
+    tags: parsed.tags,
+    isCanonical: parsed.isCanonical,
+    canonicalKind: parsed.canonicalKind,
+  });
+
+  await postDm(channel, `Indexed *${result.title}*.\n${result.contentSummary.slice(0, 250)}`);
 }
 
 function cleanMentionText(text?: string) {

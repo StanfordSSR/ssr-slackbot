@@ -4,6 +4,8 @@ import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { after } from "next/server";
 import { buildAmazonOAuthLink, syncActiveAmazonAccountForDays } from "@/lib/amazon-orders";
+import { runAnalystSession } from "@/lib/analyst";
+import { ingestUrlContext, parseAddContextInput } from "@/lib/context-ingestion";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
 import { syncProfileSlackUsers } from "@/lib/slack-users";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
@@ -46,6 +48,14 @@ export async function POST(request: Request) {
     return handleAmazonLinkCommand({ text, slackUserId });
   }
 
+  if (command === "/analyze") {
+    return handleAnalyzeCommand({ text, slackUserId, responseUrl });
+  }
+
+  if (command === "/addcontext") {
+    return handleAddContextCommand({ text, slackUserId, responseUrl });
+  }
+
   if (command === "/slackusersync") {
     return handleSlackUserSyncCommand({ slackUserId, responseUrl });
   }
@@ -53,7 +63,7 @@ export async function POST(request: Request) {
   if (command && command !== "/link") {
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, and `/slackusersync`.",
+      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, `/analyze`, `/addcontext`, and `/slackusersync`.",
     });
   }
 
@@ -318,5 +328,111 @@ async function handleSlackUserSyncCommand(params: { slackUserId: string; respons
   return NextResponse.json({
     response_type: "ephemeral",
     text: "Starting Slack user sync. I’ll clean this up when it finishes.",
+  });
+}
+
+async function handleAnalyzeCommand(params: { text: string; slackUserId: string; responseUrl: string }) {
+  const prompt = params.text.trim();
+  if (!prompt) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Usage: `/analyze <question>`",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`,
+    });
+  }
+
+  after(async () => {
+    try {
+      const answer = await runAnalystSession({
+        caller: {
+          slackUserId: params.slackUserId,
+          profileId: profile.id,
+          isAdmin: Boolean(profile.is_admin),
+          entrypoint: "slash_command",
+        },
+        prompt,
+        history: [],
+      });
+
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: answer.answer,
+      });
+    } catch (error) {
+      await postDelayedSlackResponse(
+        params.responseUrl,
+        `Analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: "Starting analysis. I’ll replace this with the result when it finishes.",
+  });
+}
+
+async function handleAddContextCommand(params: { text: string; slackUserId: string; responseUrl: string }) {
+  const { url, parsed } = parseAddContextInput(params.text);
+  if (!url) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Usage: `/addcontext <url> [internal|org] [canonical[:kind]] [team:<uuid>] [tag:<name>]`",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: `I couldn't match your Slack email (${identity.email}) to an SSR HQ profile.`,
+    });
+  }
+
+  const leadTeams = await getLeadTeamsForUser(profile.id);
+  if (!profile.is_admin && leadTeams.length === 0) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Only admins or active team leads can add context sources.",
+    });
+  }
+
+  after(async () => {
+    try {
+      const result = await ingestUrlContext({
+        linkedByProfileId: profile.id,
+        url,
+        corpus: parsed.corpus,
+        scope: parsed.scope,
+        teamId: parsed.teamId,
+        tags: parsed.tags,
+        isCanonical: parsed.isCanonical,
+        canonicalKind: parsed.canonicalKind,
+      });
+
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: `Indexed context: ${result.title}\n${result.contentSummary.slice(0, 250)}`,
+      });
+    } catch (error) {
+      await postDelayedSlackResponse(
+        params.responseUrl,
+        `Context ingestion failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: "Indexing that context source now. I’ll replace this with the result when it finishes.",
   });
 }
