@@ -37,12 +37,41 @@ type AnalystCaller = {
   entrypoint: "mention" | "slash_command";
 };
 
+type AnalystProgressStage =
+  | "routing"
+  | "reviewing_org_profile"
+  | "running_tools"
+  | "reviewing_documents"
+  | "checking_gaps"
+  | "writing_answer";
+
+const LIGHTWEIGHT_PATTERNS = [
+  /^(hi|hey|hello|yo|sup|hiya|howdy)[!.?]*$/i,
+  /^(thanks|thank you|ty)[!.?]*$/i,
+  /^(good morning|good afternoon|good evening)[!.?]*$/i,
+  /^(who are you|what are you)$/i,
+];
+
 export async function runAnalystSession(params: {
   caller: AnalystCaller;
   prompt: string;
   history?: Array<{ speaker: string; text: string }>;
+  onProgress?: (stage: AnalystProgressStage, detail: string) => Promise<void> | void;
 }) {
   const normalizedPrompt = normalizePrompt(params.prompt);
+  if (shouldUseLightweightReply(normalizedPrompt)) {
+    return {
+      answer: "",
+      evidenceBullets: [],
+      whyItMatters: null,
+      confidenceLine: "",
+      estimatedCostUsd: 0,
+      costTier: "light" as const,
+      modelTier: "mini" as const,
+      lightweight: true,
+    };
+  }
+
   const accessibleTeams = await getAccessibleTeamScope(params.caller.profileId, params.caller.isAdmin);
   const scopeKey = params.caller.isAdmin ? "admin:all" : accessibleTeams.map((team) => team.id).sort().join(",");
   const contextVersion = await getContextSourceVersionKey();
@@ -72,6 +101,7 @@ export async function runAnalystSession(params: {
   };
 
   try {
+    await reportProgress(params.onProgress, "routing", "routing your question");
     const planned = await planAnalystQuestion({
       prompt: params.prompt,
       history: params.history ?? [],
@@ -86,6 +116,7 @@ export async function runAnalystSession(params: {
     const allowedTeamIds = accessibleTeams.map((team) => team.id);
 
     if (plan.needsOrgProfile || plan.route === "org_profile" || plan.route === "casual") {
+      await reportProgress(params.onProgress, "reviewing_org_profile", "reviewing SSR org context");
       const orgProfile = await getCachedOrgProfile();
       if (orgProfile) {
         evidence.push({
@@ -102,6 +133,9 @@ export async function runAnalystSession(params: {
       }
     }
 
+    if (plan.structuredTools.length > 0) {
+      await reportProgress(params.onProgress, "running_tools", describeToolProgress(plan.structuredTools));
+    }
     await executePlanTools({
       sessionId,
       evidence,
@@ -110,6 +144,9 @@ export async function runAnalystSession(params: {
       stepOffset: 0,
     });
 
+    if (plan.documentSearches.length > 0) {
+      await reportProgress(params.onProgress, "reviewing_documents", describeDocumentProgress(plan.documentSearches));
+    }
     await executePlanSearches({
       sessionId,
       evidence,
@@ -120,6 +157,7 @@ export async function runAnalystSession(params: {
 
     for (let round = 1; round <= 2; round += 1) {
       if (evidence.length === 0) break;
+      await reportProgress(params.onProgress, "checking_gaps", "checking whether one more evidence step would help");
       const followUp = await decideAnalystFollowUp({
         prompt: params.prompt,
         plan,
@@ -136,6 +174,9 @@ export async function runAnalystSession(params: {
       };
       plan = additionalPlan;
 
+      if (additionalPlan.structuredTools.length > 0) {
+        await reportProgress(params.onProgress, "running_tools", describeToolProgress(additionalPlan.structuredTools));
+      }
       await executePlanTools({
         sessionId,
         evidence,
@@ -143,6 +184,9 @@ export async function runAnalystSession(params: {
         allowedTeamIds,
         stepOffset: round * 10,
       });
+      if (additionalPlan.documentSearches.length > 0) {
+        await reportProgress(params.onProgress, "reviewing_documents", describeDocumentProgress(additionalPlan.documentSearches));
+      }
       await executePlanSearches({
         sessionId,
         evidence,
@@ -153,6 +197,7 @@ export async function runAnalystSession(params: {
     }
 
     const orgProfileText = evidence.find((item) => item.sourceKind === "org_profile")?.citationText ?? null;
+    await reportProgress(params.onProgress, "writing_answer", "writing the final answer");
     const synthesized = await synthesizeAnalystAnswer({
       prompt: params.prompt,
       plan,
@@ -239,8 +284,8 @@ async function executePlanTools(params: {
       sourceKind: "structured_tool",
       title: toolCall.tool,
       citationText,
-          metadata: { rationale: toolCall.rationale },
-        });
+      metadata: { rationale: toolCall.rationale },
+    });
   }
 }
 
@@ -315,15 +360,15 @@ async function runStructuredTool(tool: ToolName, params: Record<string, unknown>
           typeof params.corpus === "string" && (params.corpus === "org" || params.corpus === "internal")
             ? params.corpus
             : undefined;
-      return {
-        rows: await searchContextSources({
-          query: search || "ssr",
-          corpus,
-          tags,
-          teamId: teamIds[0] ?? null,
-          limit,
-        }),
-      };
+        return {
+          rows: await searchContextSources({
+            query: search || "ssr",
+            corpus,
+            tags,
+            teamId: teamIds[0] ?? null,
+            limit,
+          }),
+        };
       }
     case "compare_team_spend_patterns":
       return { rows: await compareTeamSpendPatterns({ teamIds, days }) };
@@ -387,4 +432,50 @@ function formatSlackAnswer(params: AnalystAnswer): AnalystAnswer {
     ...params,
     answer: parts.join("\n\n"),
   };
+}
+
+function shouldUseLightweightReply(normalizedPrompt: string) {
+  return LIGHTWEIGHT_PATTERNS.some((pattern) => pattern.test(normalizedPrompt));
+}
+
+async function reportProgress(
+  onProgress: ((stage: AnalystProgressStage, detail: string) => Promise<void> | void) | undefined,
+  stage: AnalystProgressStage,
+  detail: string,
+) {
+  if (!onProgress) return;
+  await onProgress(stage, detail);
+}
+
+function describeToolProgress(tools: PlannerToolCall[]) {
+  const names = tools.slice(0, 2).map((tool) => humanizeToolName(tool.tool));
+  if (names.length === 0) return "checking structured SSR data";
+  return `checking ${names.join(" and ")}`;
+}
+
+function describeDocumentProgress(searches: AnalystPlan["documentSearches"]) {
+  const first = searches[0];
+  if (!first) return "reviewing indexed documents";
+  const tagText = first.tags.slice(0, 2).join(", ");
+  return tagText ? `reviewing ${tagText} documents` : "reviewing indexed documents";
+}
+
+function humanizeToolName(tool: ToolName) {
+  switch (tool) {
+    case "get_team_spend_summary":
+    case "compare_team_spend_patterns":
+      return "team spend patterns";
+    case "get_purchase_log_rows":
+    case "detect_receipt_audit_risks":
+      return "purchase and audit records";
+    case "get_vendor_summary":
+    case "summarize_vendor_concentration":
+      return "vendor concentration";
+    case "find_budget_pressure_signals":
+      return "budget pressure signals";
+    case "get_org_profile":
+      return "SSR org context";
+    default:
+      return tool.replace(/_/g, " ");
+  }
 }

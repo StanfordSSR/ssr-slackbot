@@ -360,11 +360,18 @@ async function handleAnalyzeCommand(params: { text: string; slackUserId: string;
         },
         prompt,
         history: [],
+        onProgress: async (_stage, detail) => {
+          await postSlackResponse(params.responseUrl, {
+            replace_original: true,
+            text: `Analyzing... ${detail}`,
+          });
+        },
       });
 
+      const finalText = "lightweight" in answer && answer.lightweight ? await simpleAnalyzeReply(prompt) : answer.answer;
       await postSlackResponse(params.responseUrl, {
         replace_original: true,
-        text: answer.answer,
+        text: finalText,
       });
     } catch (error) {
       await postDelayedSlackResponse(
@@ -435,4 +442,15 @@ async function handleAddContextCommand(params: { text: string; slackUserId: stri
     response_type: "ephemeral",
     text: "Indexing that context source now. I’ll replace this with the result when it finishes.",
   });
+}
+
+async function simpleAnalyzeReply(prompt: string) {
+  const normalized = prompt.trim().toLowerCase();
+  if (/^(hi|hey|hello|yo|sup)[!.?]*$/.test(normalized)) {
+    return "Hey! What do you want me to look into?";
+  }
+  if (/^(thanks|thank you|ty)[!.?]*$/.test(normalized)) {
+    return "Anytime.";
+  }
+  return `I’m ready. Ask a specific SSR, finance, fundraising, or policy question and I’ll dig in.`;
 }

@@ -255,22 +255,56 @@ async function handleChannelMention(event: NonNullable<SlackEventEnvelope["event
   const profile = identity ? await findProfileByEmail(identity.email) : null;
   const reply =
     identity && profile
-      ? (
-          await runAnalystSession({
-            caller: {
-              slackUserId: identity.slackUserId,
-              profileId: profile.id,
-              isAdmin: Boolean(profile.is_admin),
-              channelId: channel,
-              threadTs: event.thread_ts || event.ts || null,
-              entrypoint: "mention",
-            },
-            prompt,
-            history: context,
-          })
-        ).answer
+      ? await replyToMentionWithRouting({
+          channel,
+          pendingTs: pendingMessage.ts,
+          slackUserId: identity.slackUserId,
+          profileId: profile.id,
+          isAdmin: Boolean(profile.is_admin),
+          prompt,
+          history: context,
+          threadTs: event.thread_ts || event.ts || null,
+        })
       : await answerSlackMention({ prompt, history: context });
   await updateMessage(channel, pendingMessage.ts, reply);
+}
+
+async function replyToMentionWithRouting(params: {
+  channel: string;
+  pendingTs: string;
+  slackUserId: string;
+  profileId: string;
+  isAdmin: boolean;
+  prompt: string;
+  history: Array<{ speaker: string; text: string }>;
+  threadTs: string | null;
+}) {
+  const simple = isSimpleCasualPrompt(params.prompt);
+  if (simple) {
+    return answerSlackMention({ prompt: params.prompt, history: params.history });
+  }
+
+  const answer = await runAnalystSession({
+    caller: {
+      slackUserId: params.slackUserId,
+      profileId: params.profileId,
+      isAdmin: params.isAdmin,
+      channelId: params.channel,
+      threadTs: params.threadTs,
+      entrypoint: "mention",
+    },
+    prompt: params.prompt,
+    history: params.history,
+    onProgress: async (_stage, detail) => {
+      await updateMessage(params.channel, params.pendingTs, `_thinking... ${detail}_`);
+    },
+  });
+
+  if ("lightweight" in answer && answer.lightweight) {
+    return answerSlackMention({ prompt: params.prompt, history: params.history });
+  }
+
+  return answer.answer;
 }
 
 async function handleContextFileUpload(
@@ -334,4 +368,8 @@ function cleanMentionText(text?: string) {
     .replace(/<@[A-Z0-9]+>/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isSimpleCasualPrompt(prompt: string) {
+  return /^(hi|hey|hello|yo|sup|thanks|thank you|good morning|good afternoon|good evening)[!.?]*$/i.test(prompt.trim());
 }
