@@ -637,6 +637,39 @@ export async function getTeamMonthlySpend(params: {
     }));
 }
 
+export async function getMonthlySpendForTeams(params: {
+  teamIds: string[];
+  startDate?: string | null;
+}) {
+  let query = supabase
+    .from("purchase_logs")
+    .select("team_id, amount_cents, purchased_at")
+    .in("team_id", params.teamIds)
+    .order("purchased_at", { ascending: true });
+
+  if (params.startDate) {
+    query = query.gte("purchased_at", params.startDate);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const byMonth = new Map<string, number>();
+  for (const row of data ?? []) {
+    const purchasedAt = typeof row.purchased_at === "string" ? row.purchased_at : null;
+    if (!purchasedAt) continue;
+    const monthKey = purchasedAt.slice(0, 7);
+    byMonth.set(monthKey, (byMonth.get(monthKey) ?? 0) + (row.amount_cents ?? 0));
+  }
+
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, totalCents]) => ({
+      month,
+      totalCents,
+    }));
+}
+
 export async function getTeamMonthlyMemberCounts(params: {
   teamId: string;
   months: string[];

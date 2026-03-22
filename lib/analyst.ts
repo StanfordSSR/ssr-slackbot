@@ -11,6 +11,7 @@ import {
   getAnswerCache,
   getBudgetVsActual,
   getContextSourceVersionKey,
+  getMonthlySpendForTeams,
   getPurchaseLogs,
   getRecentReports,
   getTeamDirectory,
@@ -728,6 +729,10 @@ function isMonthlySpendQuestion(normalizedPrompt: string) {
     || /(spend|spent|expenses|purchases|total).*(monthly|per month|each month|by month)/.test(normalizedPrompt);
 }
 
+function isClubWideQuestion(normalizedPrompt: string) {
+  return /(club|overall|all teams|whole club|organization|org-wide|org wide|total club)/.test(normalizedPrompt);
+}
+
 function isPerPersonQuestion(normalizedPrompt: string) {
   return /(per person|per member|on average|average per person|divide by member count|divide by roster)/.test(normalizedPrompt);
 }
@@ -738,9 +743,6 @@ function inferMonthlyStartDate(prompt: string) {
   if (iso) {
     return `${iso[1]}-${iso[2]}-${iso[3] ?? "01"}`;
   }
-
-  const monthYear = lower.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(20\d{2})\b/);
-  if (!monthYear) return null;
 
   const monthMap: Record<string, string> = {
     january: "01",
@@ -767,6 +769,19 @@ function inferMonthlyStartDate(prompt: string) {
     december: "12",
     dec: "12",
   };
+
+  const lastMonthYear = lower.match(/\blast\s+(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\b/);
+  if (lastMonthYear) {
+    const now = new Date();
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth() + 1;
+    const monthValue = Number(monthMap[lastMonthYear[1]]);
+    const year = monthValue <= currentMonth ? currentYear - 1 : currentYear;
+    return `${year}-${monthMap[lastMonthYear[1]]}-01`;
+  }
+
+  const monthYear = lower.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(20\d{2})\b/);
+  if (!monthYear) return null;
 
   return `${monthYear[2]}-${monthMap[monthYear[1]]}-01`;
 }
