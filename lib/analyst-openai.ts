@@ -176,7 +176,7 @@ export async function planAnalystQuestion(input: {
           {
             type: "input_text",
             text:
-              "You are a routing and planning system for an SSR Slack analyst. Choose the minimum evidence needed for a reliable answer. Keep plans compact, accuracy-first, and latency-aware. Prefer targeted SQL over the live schema catalog for structured finance/roster/reporting questions. Use SQL when the question depends on live Supabase facts, especially team size, budgets, reports, purchases, line items, or dates. Only choose needsWeb when the question is explicitly about live external information. SQL rules: output bare read-only SQL only, no prose, no markdown fences; prefer explicit public.table names; for team-size use public.team_roster_members, not public.team_memberships; for spend timing use purchase_logs.purchased_at, not receipt upload times; for team-scoped SQL project team_id in the final select when possible; for month rollups use date_trunc('month', purchased_at).",
+              "You are a routing and planning system for an SSR Slack analyst. Choose the minimum evidence needed for a reliable answer. Keep plans compact, accuracy-first, and latency-aware. Prefer targeted SQL over the live schema catalog for structured finance/roster/reporting questions. Use SQL when the question depends on live Supabase facts, especially team size, budgets, reports, purchases, line items, or dates. Only choose needsWeb when the question is explicitly about live external information. Timeframe rule: interpret 'this year' as the current calendar year unless the user explicitly says 'academic year'. Do not silently substitute academic-year logic for calendar-year questions. SQL rules: output bare read-only SQL only, no prose, no markdown fences; prefer explicit public.table names; for team-size use public.team_roster_members, not public.team_memberships; for spend timing use purchase_logs.purchased_at, not receipt upload times; for team-scoped SQL project team_id in the final select when possible; for month rollups use date_trunc('month', purchased_at).",
           },
         ],
       },
@@ -323,7 +323,7 @@ export async function repairAnalystSql(input: {
           {
             type: "input_text",
             text:
-              "You repair read-only SQL for an SSR Slack analyst. Return only a corrected SQL query and a terse rationale. Do not add markdown fences or commentary. Keep it SELECT/CTE only. Use explicit public.table names. For team-scoped queries, keep team_id in the final projection. For team-size use public.team_roster_members. For spend timing use purchase_logs.purchased_at.",
+              "You repair read-only SQL for an SSR Slack analyst. Return only a corrected SQL query and a terse rationale. Do not add markdown fences or commentary. Keep it SELECT/CTE only. Use explicit public.table names. Timeframe rule: interpret 'this year' as the current calendar year unless the user explicitly says 'academic year'. For team-scoped queries, keep team_id in the final projection. For team-size use public.team_roster_members. For spend timing use purchase_logs.purchased_at.",
           },
         ],
       },
@@ -374,7 +374,7 @@ export async function planDirectSqlQuestion(input: {
           {
             type: "input_text",
             text:
-              "You decide whether an SSR Slack question should be answered directly from structured database SQL. Use direct SQL when the question is primarily about counts, rankings, comparisons, rollups, categories, purchases, budgets, reports, roster sizes, or other factual Supabase-backed metrics. Return one strong read-only SQL query when direct SQL is appropriate. Output bare SQL only, no prose, no markdown fences. Use explicit public.table names. For team-size use public.team_roster_members. For spend timing use purchase_logs.purchased_at. For team-scoped queries project team_id in the final select when possible.",
+              "You decide whether an SSR Slack question should be answered directly from structured database SQL. Use direct SQL when the question is primarily about counts, rankings, comparisons, rollups, categories, purchases, budgets, reports, roster sizes, or other factual Supabase-backed metrics. Return one strong read-only SQL query when direct SQL is appropriate. Output bare SQL only, no prose, no markdown fences. Timeframe rule: interpret 'this year' as the current calendar year unless the user explicitly says 'academic year'. Use explicit public.table names. For team-size use public.team_roster_members. For spend timing use purchase_logs.purchased_at. For team-scoped queries project team_id in the final select when possible.",
           },
         ],
       },
