@@ -110,7 +110,8 @@ export async function getSchemaCatalogText() {
       const semantics = table.semantic_roles.length > 0 ? ` roles=${table.semantic_roles.join("|")}` : "";
       const scope = ` scope=${table.scope_kind}`;
       const timeCol = table.preferred_time_column ? ` time=${table.preferred_time_column}` : "";
-      return `${table.schema_name}.${table.table_name}${scope}${timeCol}${semantics} columns=[${cols}]`;
+      const description = table.description ? ` desc="${table.description}"` : "";
+      return `${table.schema_name}.${table.table_name}${scope}${timeCol}${semantics}${description} columns=[${cols}]`;
     })
     .join("\n");
 }

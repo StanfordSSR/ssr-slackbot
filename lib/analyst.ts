@@ -25,7 +25,14 @@ import {
   upsertAnswerCache,
   updateQuestionSessionPlan,
 } from "@/lib/analyst-store";
-import { decideAnalystFollowUp, estimateAnalysisCost, planAnalystQuestion, synthesizeAnalystAnswer, UsageTotals } from "@/lib/analyst-openai";
+import {
+  decideAnalystFollowUp,
+  estimateAnalysisCost,
+  planAnalystQuestion,
+  repairAnalystSql,
+  synthesizeAnalystAnswer,
+  UsageTotals,
+} from "@/lib/analyst-openai";
 import { getCachedOrgProfile, searchContextForQuestion } from "@/lib/context-ingestion";
 import { AnalystAnswer, AnalystEvidence, AnalystPlan, PlannerToolCall, ToolName } from "@/types/analyst";
 import { getSchemaCatalogText, validateAndExecuteSql } from "@/lib/schema-sql";
@@ -162,12 +169,16 @@ export async function runAnalystSession(params: {
       await reportProgress(params.onProgress, "running_tools", "running finance queries");
     }
     await executePlanSqlQueries({
+      prompt: params.prompt,
       sessionId,
       evidence,
       sqlQueries: plan.sqlQueries,
       allowedTeamIds,
       isAdmin: params.caller.isAdmin,
       stepOffset: 100,
+      schemaCatalogText,
+      accessibleTeams: accessibleTeams.map((team) => ({ id: team.id, name: team.name })),
+      usage,
     });
 
     if (plan.documentSearches.length > 0) {
@@ -359,12 +370,16 @@ async function executePlanSearches(params: {
 }
 
 async function executePlanSqlQueries(params: {
+  prompt: string;
   sessionId: string;
   evidence: AnalystEvidence[];
   sqlQueries: AnalystPlan["sqlQueries"];
   allowedTeamIds: string[];
   isAdmin: boolean;
   stepOffset: number;
+  schemaCatalogText: string;
+  accessibleTeams: Array<{ id: string; name: string }>;
+  usage: UsageTotals;
 }) {
   const cappedQueries = params.sqlQueries.slice(0, 3);
   for (let index = 0; index < cappedQueries.length; index += 1) {
@@ -401,6 +416,55 @@ async function executePlanSqlQueries(params: {
         },
       });
     } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+
+      try {
+        const repaired = await repairAnalystSql({
+          prompt: params.prompt,
+          sql: query.sql,
+          errorText,
+          schemaCatalogText: params.schemaCatalogText,
+          accessibleTeams: params.accessibleTeams,
+        });
+        accumulateUsage(params.usage, repaired.usage);
+
+        const repairedResult = await validateAndExecuteSql({
+          sessionId: params.sessionId,
+          stepIndex: params.stepOffset + index,
+          rationale: `${query.rationale} (repaired)`,
+          sql: repaired.repair.sql,
+          isAdmin: params.isAdmin,
+          allowedTeamIds: params.allowedTeamIds,
+        });
+
+        const repairedCitationText = compactSqlRows(repairedResult.rows);
+        params.evidence.push({
+          sourceKind: "structured_tool",
+          title: `SQL: ${query.expectedAnswerUse}`,
+          citationText: repairedCitationText,
+          metadata: {
+            referencedTables: repairedResult.referencedTables,
+            sqlFingerprint: repairedResult.sqlFingerprint,
+            repairedFromError: errorText,
+            repairRationale: repaired.repair.rationale,
+          },
+        });
+        await addQuestionEvidence({
+          sessionId: params.sessionId,
+          sourceKind: "structured_tool",
+          title: `SQL: ${query.expectedAnswerUse}`,
+          citationText: repairedCitationText,
+          metadata: {
+            referencedTables: repairedResult.referencedTables,
+            sqlFingerprint: repairedResult.sqlFingerprint,
+            executedSql: repairedResult.executedSql,
+            repairedFromError: errorText,
+            repairRationale: repaired.repair.rationale,
+          },
+        });
+        continue;
+      } catch {}
+
       const fallback = chooseSqlFallback(query);
       if (!fallback) throw error;
 
@@ -412,7 +476,7 @@ async function executePlanSqlQueries(params: {
         citationText,
         metadata: {
           fallbackForSql: query.expectedAnswerUse,
-          sqlError: error instanceof Error ? error.message : String(error),
+          sqlError: errorText,
         },
       });
       await addQuestionEvidence({
@@ -422,7 +486,7 @@ async function executePlanSqlQueries(params: {
         citationText,
         metadata: {
           fallbackForSql: query.expectedAnswerUse,
-          sqlError: error instanceof Error ? error.message : String(error),
+          sqlError: errorText,
         },
       });
     }

@@ -115,6 +115,11 @@ const orgProfileSchema = z.object({
   profileText: z.string(),
 });
 
+const sqlRepairSchema = z.object({
+  sql: z.string(),
+  rationale: z.string(),
+});
+
 export type UsageTotals = {
   inputTokens: number;
   outputTokens: number;
@@ -156,7 +161,7 @@ export async function planAnalystQuestion(input: {
           {
             type: "input_text",
             text:
-              "You are a routing and planning system for an SSR Slack analyst. Choose the minimum evidence needed for a reliable answer. Keep plans compact, accuracy-first, and latency-aware. Prefer targeted SQL over the live schema catalog for structured finance/roster/reporting questions. Use SQL when the question depends on live Supabase facts, especially team size, budgets, reports, purchases, line items, or dates. Only choose needsWeb when the question is explicitly about live external information.",
+              "You are a routing and planning system for an SSR Slack analyst. Choose the minimum evidence needed for a reliable answer. Keep plans compact, accuracy-first, and latency-aware. Prefer targeted SQL over the live schema catalog for structured finance/roster/reporting questions. Use SQL when the question depends on live Supabase facts, especially team size, budgets, reports, purchases, line items, or dates. Only choose needsWeb when the question is explicitly about live external information. SQL rules: output bare read-only SQL only, no prose, no markdown fences; prefer explicit public.table names; for team-size use public.team_roster_members, not public.team_memberships; for spend timing use purchase_logs.purchased_at, not receipt upload times; for team-scoped SQL project team_id in the final select when possible; for month rollups use date_trunc('month', purchased_at).",
           },
         ],
       },
@@ -278,6 +283,56 @@ export async function synthesizeAnalystAnswer(input: {
 
   return {
     answer: response.output_parsed,
+    usage: safeUsage(response),
+  };
+}
+
+export async function repairAnalystSql(input: {
+  prompt: string;
+  sql: string;
+  errorText: string;
+  schemaCatalogText: string;
+  accessibleTeams: Array<{ id: string; name: string }>;
+}) {
+  const teamsText =
+    input.accessibleTeams.length > 0
+      ? input.accessibleTeams.map((team) => `${team.name} (${team.id})`).join(", ")
+      : "(no restricted team access)";
+
+  const response = await client.responses.parse({
+    model: "gpt-5-mini",
+    input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text:
+              "You repair read-only SQL for an SSR Slack analyst. Return only a corrected SQL query and a terse rationale. Do not add markdown fences or commentary. Keep it SELECT/CTE only. Use explicit public.table names. For team-scoped queries, keep team_id in the final projection. For team-size use public.team_roster_members. For spend timing use purchase_logs.purchased_at.",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `Question: ${input.prompt}\nAccessible teams: ${teamsText}\nSchema catalog:\n${input.schemaCatalogText}\n\nOriginal SQL:\n${input.sql}\n\nError:\n${input.errorText}`,
+          },
+        ],
+      },
+    ],
+    text: {
+      format: zodTextFormat(sqlRepairSchema, "analyst_sql_repair"),
+    },
+  });
+
+  if (!response.output_parsed) {
+    throw new Error("SQL repair did not return a parsed result.");
+  }
+
+  return {
+    repair: response.output_parsed,
     usage: safeUsage(response),
   };
 }

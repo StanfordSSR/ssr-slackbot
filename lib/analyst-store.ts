@@ -315,13 +315,14 @@ export async function searchContextSources(params: {
   teamId?: string | null;
   limit: number;
 }) {
+  const candidateLimit = Math.max(params.limit * 8, 25);
   let queryBuilder = supabase
     .from("context_sources")
     .select(
       "id, title, source_type, source_url, corpus, scope, team_id, tags, is_canonical, canonical_kind, mime_type, openai_file_id, openai_vector_store_id, content_text, content_summary, status, error_text",
     )
     .eq("status", "ready")
-    .limit(params.limit);
+    .limit(candidateLimit);
 
   if (params.corpus) {
     queryBuilder = queryBuilder.eq("corpus", params.corpus);
@@ -337,16 +338,36 @@ export async function searchContextSources(params: {
   if (error) throw error;
 
   const normalizedQuery = params.query.trim().toLowerCase();
+  const queryTokens = normalizedQuery.split(/\s+/).filter((part) => part.length >= 3);
   const scored = ((data ?? []) as ContextSourceRecord[])
     .map((row) => {
-      const haystack = `${row.title}\n${row.content_summary ?? ""}\n${row.content_text ?? ""}`.toLowerCase();
-      const score = normalizedQuery
-        .split(/\s+/)
-        .filter(Boolean)
-        .reduce((total, part) => total + (haystack.includes(part) ? 1 : 0), 0);
+      const title = row.title.toLowerCase();
+      const summary = (row.content_summary ?? "").toLowerCase();
+      const text = (row.content_text ?? "").toLowerCase();
+      const tags = row.tags.map((tag) => tag.toLowerCase());
+      let score = 0;
+
+      if (normalizedQuery && title.includes(normalizedQuery)) score += 10;
+      if (normalizedQuery && summary.includes(normalizedQuery)) score += 7;
+      if (normalizedQuery && text.includes(normalizedQuery)) score += 4;
+
+      for (const token of queryTokens) {
+        if (title.includes(token)) score += 4;
+        if (summary.includes(token)) score += 3;
+        if (text.includes(token)) score += 1;
+        if (tags.some((tag) => tag.includes(token))) score += 5;
+      }
+
+      if (row.is_canonical) score += 2;
+      if (params.teamId && row.team_id === params.teamId) score += 3;
+      if (row.scope === "org") score += 1;
+
       return { row, score };
     })
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return Number(right.row.is_canonical) - Number(left.row.is_canonical);
+    })
     .slice(0, params.limit)
     .map((item) => item.row);
 
