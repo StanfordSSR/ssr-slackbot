@@ -35,6 +35,12 @@ export type PlannerToolCall = {
   paramsJson: string;
 };
 
+export type PlannerSqlQuery = {
+  rationale: string;
+  sql: string;
+  expectedAnswerUse: string;
+};
+
 export type DocumentSearchPlan = {
   query: string;
   corpus: "org" | "internal" | "both";
@@ -52,6 +58,7 @@ export type AnalystPlan = {
   needsDocuments: boolean;
   needsWeb: boolean;
   structuredTools: PlannerToolCall[];
+  sqlQueries: PlannerSqlQuery[];
   documentSearches: DocumentSearchPlan[];
 };
 
@@ -91,4 +98,29 @@ export type ContextSourceRecord = {
   content_summary: string | null;
   status: "processing" | "ready" | "failed";
   error_text: string | null;
+};
+
+export type SchemaCatalogTable = {
+  id: string;
+  schema_name: string;
+  table_name: string;
+  table_kind: string;
+  description: string | null;
+  scope_kind: "org" | "team" | "admin_only" | "blocked";
+  team_scope_column: string | null;
+  access_level: "standard" | "admin_only" | "blocked";
+  semantic_roles: string[];
+  preferred_time_column: string | null;
+  is_queryable: boolean;
+  row_count_hint: number | null;
+};
+
+export type SchemaCatalogColumn = {
+  table_id: string;
+  column_name: string;
+  data_type: string;
+  is_nullable: boolean;
+  ordinal_position: number | null;
+  semantic_roles: string[];
+  is_queryable: boolean;
 };

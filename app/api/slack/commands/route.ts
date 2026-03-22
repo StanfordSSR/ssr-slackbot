@@ -6,6 +6,7 @@ import { after } from "next/server";
 import { buildAmazonOAuthLink, syncActiveAmazonAccountForDays } from "@/lib/amazon-orders";
 import { runAnalystSession } from "@/lib/analyst";
 import { ingestUrlContext, parseAddContextInput } from "@/lib/context-ingestion";
+import { refreshSchemaCatalog } from "@/lib/schema-sql";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
 import { syncProfileSlackUsers } from "@/lib/slack-users";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
@@ -60,10 +61,14 @@ export async function POST(request: Request) {
     return handleSlackUserSyncCommand({ slackUserId, responseUrl });
   }
 
+  if (command === "/refreshschema") {
+    return handleRefreshSchemaCommand({ slackUserId, responseUrl });
+  }
+
   if (command && command !== "/link") {
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, `/analyze`, `/addcontext`, and `/slackusersync`.",
+      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, `/analyze`, `/addcontext`, `/slackusersync`, and `/refreshschema`.",
     });
   }
 
@@ -441,6 +446,37 @@ async function handleAddContextCommand(params: { text: string; slackUserId: stri
   return NextResponse.json({
     response_type: "ephemeral",
     text: "Indexing that context source now. I’ll replace this with the result when it finishes.",
+  });
+}
+
+async function handleRefreshSchemaCommand(params: { slackUserId: string; responseUrl: string }) {
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile?.is_admin) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Only admins can run `/refreshschema`.",
+    });
+  }
+
+  after(async () => {
+    try {
+      const result = await refreshSchemaCatalog();
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: `Schema refresh finished. Tables ${result.refreshedTables}, columns ${result.refreshedColumns}, relationships ${result.refreshedRelationships}.`,
+      });
+    } catch (error) {
+      await postDelayedSlackResponse(
+        params.responseUrl,
+        `Schema refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: "Refreshing the schema catalog now. I’ll replace this with the result when it finishes.",
   });
 }
 

@@ -27,6 +27,7 @@ import {
 import { decideAnalystFollowUp, estimateAnalysisCost, planAnalystQuestion, synthesizeAnalystAnswer, UsageTotals } from "@/lib/analyst-openai";
 import { getCachedOrgProfile, searchContextForQuestion } from "@/lib/context-ingestion";
 import { AnalystAnswer, AnalystEvidence, AnalystPlan, PlannerToolCall, ToolName } from "@/types/analyst";
+import { getSchemaCatalogText, validateAndExecuteSql } from "@/lib/schema-sql";
 
 type AnalystCaller = {
   slackUserId: string;
@@ -103,10 +104,12 @@ export async function runAnalystSession(params: {
 
   try {
     await reportProgress(params.onProgress, "routing", "routing your question");
+    const schemaCatalogText = await getSchemaCatalogText();
     const planned = await planAnalystQuestion({
       prompt: params.prompt,
       history: params.history ?? [],
       accessibleTeams: accessibleTeams.map((team) => ({ id: team.id, name: team.name })),
+      schemaCatalogText,
     });
     accumulateUsage(usage, planned.usage);
     let plan = planned.plan;
@@ -146,6 +149,18 @@ export async function runAnalystSession(params: {
       promptConstraints,
     });
 
+    if (plan.sqlQueries.length > 0) {
+      await reportProgress(params.onProgress, "running_tools", "running finance queries");
+    }
+    await executePlanSqlQueries({
+      sessionId,
+      evidence,
+      sqlQueries: plan.sqlQueries,
+      allowedTeamIds,
+      isAdmin: params.caller.isAdmin,
+      stepOffset: 100,
+    });
+
     if (plan.documentSearches.length > 0) {
       await reportProgress(params.onProgress, "reviewing_documents", describeDocumentProgress(plan.documentSearches));
     }
@@ -171,6 +186,7 @@ export async function runAnalystSession(params: {
 
       const additionalPlan: AnalystPlan = {
         ...plan,
+        sqlQueries: [],
         structuredTools: followUp.decision.nextTools as PlannerToolCall[],
         documentSearches: followUp.decision.nextDocumentSearches,
       };
@@ -333,6 +349,50 @@ async function executePlanSearches(params: {
   }
 }
 
+async function executePlanSqlQueries(params: {
+  sessionId: string;
+  evidence: AnalystEvidence[];
+  sqlQueries: AnalystPlan["sqlQueries"];
+  allowedTeamIds: string[];
+  isAdmin: boolean;
+  stepOffset: number;
+}) {
+  const cappedQueries = params.sqlQueries.slice(0, 3);
+  for (let index = 0; index < cappedQueries.length; index += 1) {
+    const query = cappedQueries[index];
+    const result = await validateAndExecuteSql({
+      sessionId: params.sessionId,
+      stepIndex: params.stepOffset + index,
+      rationale: query.rationale,
+      sql: query.sql,
+      isAdmin: params.isAdmin,
+      allowedTeamIds: params.allowedTeamIds,
+    });
+
+    const citationText = compactSqlRows(result.rows);
+    params.evidence.push({
+      sourceKind: "structured_tool",
+      title: `SQL: ${query.expectedAnswerUse}`,
+      citationText,
+      metadata: {
+        referencedTables: result.referencedTables,
+        sqlFingerprint: result.sqlFingerprint,
+      },
+    });
+    await addQuestionEvidence({
+      sessionId: params.sessionId,
+      sourceKind: "structured_tool",
+      title: `SQL: ${query.expectedAnswerUse}`,
+      citationText,
+      metadata: {
+        referencedTables: result.referencedTables,
+        sqlFingerprint: result.sqlFingerprint,
+        executedSql: result.executedSql,
+      },
+    });
+  }
+}
+
 async function runStructuredTool(tool: ToolName, params: Record<string, unknown>, allowedTeamIds: string[]) {
   const requestedTeamIds = sanitizeTeamIds(params.teamIds, allowedTeamIds);
   const teamIds = requestedTeamIds.length > 0 ? requestedTeamIds : allowedTeamIds;
@@ -460,6 +520,21 @@ function compactToolOutput(toolName: string, output: unknown) {
 
   const json = JSON.stringify(output);
   return `${toolName}: ${json.slice(0, 500)}`;
+}
+
+function compactSqlRows(rows: Array<Record<string, unknown>>) {
+  if (rows.length === 0) {
+    return "Query returned no rows.";
+  }
+  return rows
+    .slice(0, 8)
+    .map((row) =>
+      Object.entries(row)
+        .slice(0, 6)
+        .map(([key, value]) => `${key}=${String(value)}`)
+        .join(", "),
+    )
+    .join("; ");
 }
 
 function sanitizeTeamIds(input: unknown, allowedTeamIds: string[]) {

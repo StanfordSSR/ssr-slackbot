@@ -14,6 +14,15 @@ const plannerSchema = z.object({
   needsStructuredData: z.boolean(),
   needsDocuments: z.boolean(),
   needsWeb: z.boolean(),
+  sqlQueries: z
+    .array(
+      z.object({
+        rationale: z.string(),
+        sql: z.string().describe("Read-only SQL using allowlisted public schema tables. Prefer explicit table names and project team_id when team-scoped."),
+        expectedAnswerUse: z.string(),
+      }),
+    )
+    .max(3),
   structuredTools: z
     .array(
       z.object({
@@ -129,6 +138,7 @@ export async function planAnalystQuestion(input: {
   prompt: string;
   history: Array<{ speaker: string; text: string }>;
   accessibleTeams: Array<{ id: string; name: string }>;
+  schemaCatalogText: string;
 }) {
   const historyText =
     input.history.length > 0 ? input.history.map((message) => `${message.speaker}: ${message.text}`).join("\n") : "(none)";
@@ -146,7 +156,7 @@ export async function planAnalystQuestion(input: {
           {
             type: "input_text",
             text:
-              "You are a routing and planning system for an SSR Slack analyst. Choose the minimum evidence needed for a reliable answer. Keep plans compact, accuracy-first, and latency-aware. Prefer targeted structured tools and tight document retrieval over broad exploration. Only choose needsWeb when the question is explicitly about live external information.",
+              "You are a routing and planning system for an SSR Slack analyst. Choose the minimum evidence needed for a reliable answer. Keep plans compact, accuracy-first, and latency-aware. Prefer targeted SQL over the live schema catalog for structured finance/roster/reporting questions. Use SQL when the question depends on live Supabase facts, especially team size, budgets, reports, purchases, line items, or dates. Only choose needsWeb when the question is explicitly about live external information.",
           },
         ],
       },
@@ -155,7 +165,7 @@ export async function planAnalystQuestion(input: {
         content: [
           {
             type: "input_text",
-            text: `Accessible teams: ${teamsText}\nRecent Slack context:\n${historyText}\n\nQuestion:\n${input.prompt}`,
+            text: `Accessible teams: ${teamsText}\nSchema catalog:\n${input.schemaCatalogText}\n\nRecent Slack context:\n${historyText}\n\nQuestion:\n${input.prompt}`,
           },
         ],
       },

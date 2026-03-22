@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { getEnv } from "@/lib/env";
-import { ContextSourceRecord } from "@/types/analyst";
+import { ContextSourceRecord, SchemaCatalogColumn, SchemaCatalogTable } from "@/types/analyst";
 import { getActiveTeams, getLeadTeamsForUser } from "@/lib/supabase";
 
 const supabase = createClient(getEnv("SUPABASE_URL")!, getEnv("SUPABASE_SERVICE_ROLE_KEY")!, {
@@ -18,6 +18,201 @@ export async function setRuntimeConfig(key: string, value: Record<string, unknow
     { config_key: key, config_value: value },
     { onConflict: "config_key" },
   );
+  if (error) throw error;
+}
+
+export async function startSchemaRefreshRun() {
+  const { data, error } = await supabase
+    .from("schema_refresh_runs")
+    .insert({ status: "processing" })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function completeSchemaRefreshRun(params: {
+  runId: string;
+  refreshedTables: number;
+  refreshedColumns: number;
+  refreshedRelationships: number;
+}) {
+  const { error } = await supabase
+    .from("schema_refresh_runs")
+    .update({
+      status: "completed",
+      completed_at: new Date().toISOString(),
+      refreshed_tables: params.refreshedTables,
+      refreshed_columns: params.refreshedColumns,
+      refreshed_relationships: params.refreshedRelationships,
+    })
+    .eq("id", params.runId);
+  if (error) throw error;
+}
+
+export async function failSchemaRefreshRun(runId: string, errorText: string) {
+  const { error } = await supabase
+    .from("schema_refresh_runs")
+    .update({
+      status: "failed",
+      completed_at: new Date().toISOString(),
+      error_text: errorText,
+    })
+    .eq("id", runId);
+  if (error) throw error;
+}
+
+export async function getLiveSchemaColumns() {
+  const { data, error } = await supabase.rpc("get_live_schema_columns");
+  if (error) throw error;
+  return (data ?? []) as Array<{
+    schema_name: string;
+    table_name: string;
+    table_kind: string;
+    column_name: string;
+    data_type: string;
+    is_nullable: boolean;
+    ordinal_position: number;
+  }>;
+}
+
+export async function getLiveSchemaRelationships() {
+  const { data, error } = await supabase.rpc("get_live_schema_relationships");
+  if (error) throw error;
+  return (data ?? []) as Array<{
+    from_schema: string;
+    from_table: string;
+    from_column: string;
+    to_schema: string;
+    to_table: string;
+    to_column: string;
+  }>;
+}
+
+export async function replaceSchemaCatalog(params: {
+  tables: Array<Omit<SchemaCatalogTable, "id">>;
+  columns: Array<{ tableKey: string } & Omit<SchemaCatalogColumn, "table_id">>;
+  relationships: Array<{
+    fromTableKey: string;
+    fromColumnName: string;
+    toTableKey: string;
+    toColumnName: string;
+    relationshipKind: string;
+  }>;
+}) {
+  const { error: deleteRelationshipsError } = await supabase.from("schema_catalog_relationships").delete().not("id", "is", null);
+  if (deleteRelationshipsError) throw deleteRelationshipsError;
+  const { error: deleteColumnsError } = await supabase.from("schema_catalog_columns").delete().not("id", "is", null);
+  if (deleteColumnsError) throw deleteColumnsError;
+  const { error: deleteTablesError } = await supabase.from("schema_catalog_tables").delete().not("id", "is", null);
+  if (deleteTablesError) throw deleteTablesError;
+
+  const { data: insertedTables, error: insertTablesError } = await supabase
+    .from("schema_catalog_tables")
+    .insert(params.tables)
+    .select("id, schema_name, table_name");
+  if (insertTablesError) throw insertTablesError;
+
+  const tableIdByKey = new Map(
+    (insertedTables ?? []).map((row) => [`${row.schema_name}.${row.table_name}`, row.id as string]),
+  );
+
+  if (params.columns.length > 0) {
+    const { error: insertColumnsError } = await supabase.from("schema_catalog_columns").insert(
+      params.columns.map((column) => ({
+        table_id: tableIdByKey.get(column.tableKey),
+        column_name: column.column_name,
+        data_type: column.data_type,
+        is_nullable: column.is_nullable,
+        ordinal_position: column.ordinal_position,
+        semantic_roles: column.semantic_roles,
+        is_queryable: column.is_queryable,
+      })),
+    );
+    if (insertColumnsError) throw insertColumnsError;
+  }
+
+  if (params.relationships.length > 0) {
+    const { error: insertRelationshipsError } = await supabase.from("schema_catalog_relationships").insert(
+      params.relationships
+        .map((relationship) => ({
+          from_table_id: tableIdByKey.get(relationship.fromTableKey),
+          from_column_name: relationship.fromColumnName,
+          to_table_id: tableIdByKey.get(relationship.toTableKey),
+          to_column_name: relationship.toColumnName,
+          relationship_kind: relationship.relationshipKind,
+        }))
+        .filter((row) => row.from_table_id && row.to_table_id),
+    );
+    if (insertRelationshipsError) throw insertRelationshipsError;
+  }
+}
+
+export async function getSchemaCatalog() {
+  const { data: tables, error: tablesError } = await supabase
+    .from("schema_catalog_tables")
+    .select(
+      "id, schema_name, table_name, table_kind, description, scope_kind, team_scope_column, access_level, semantic_roles, preferred_time_column, is_queryable, row_count_hint",
+    )
+    .eq("is_queryable", true)
+    .neq("access_level", "blocked")
+    .order("schema_name")
+    .order("table_name");
+  if (tablesError) throw tablesError;
+
+  const tableIds = (tables ?? []).map((table) => table.id as string);
+  const { data: columns, error: columnsError } = await supabase
+    .from("schema_catalog_columns")
+    .select("table_id, column_name, data_type, is_nullable, ordinal_position, semantic_roles, is_queryable")
+    .in("table_id", tableIds.length > 0 ? tableIds : ["00000000-0000-0000-0000-000000000000"])
+    .eq("is_queryable", true)
+    .order("ordinal_position");
+  if (columnsError) throw columnsError;
+
+  return {
+    tables: (tables ?? []) as SchemaCatalogTable[],
+    columns: (columns ?? []) as SchemaCatalogColumn[],
+  };
+}
+
+export async function executeGuardedSql(params: { sql: string; maxRows?: number; timeoutMs?: number }) {
+  const { data, error } = await supabase.rpc("execute_guarded_sql", {
+    query_text: params.sql,
+    max_rows: params.maxRows ?? 50,
+    timeout_ms: params.timeoutMs ?? 4000,
+  });
+  if (error) throw error;
+  return (data ?? []) as Array<Record<string, unknown>>;
+}
+
+export async function recordQuestionSqlQuery(params: {
+  sessionId: string;
+  stepIndex: number;
+  rationale: string;
+  proposedSql: string;
+  executedSql?: string;
+  sqlFingerprint?: string;
+  referencedTables: string[];
+  rowCount: number;
+  durationMs: number;
+  status: "proposed" | "executed" | "rejected" | "failed";
+  errorText?: string | null;
+  resultPreview?: unknown;
+}) {
+  const { error } = await supabase.from("question_sql_queries").insert({
+    session_id: params.sessionId,
+    step_index: params.stepIndex,
+    rationale: params.rationale,
+    proposed_sql: params.proposedSql,
+    executed_sql: params.executedSql ?? null,
+    sql_fingerprint: params.sqlFingerprint ?? null,
+    referenced_tables: params.referencedTables,
+    row_count: params.rowCount,
+    duration_ms: params.durationMs,
+    status: params.status,
+    error_text: params.errorText ?? null,
+    result_preview: params.resultPreview ?? null,
+  });
   if (error) throw error;
 }
 
@@ -310,7 +505,7 @@ export async function getTeamDirectory(teamIds?: string[]) {
   if (rows.length === 0) return [];
 
   const { data: memberships, error: membershipsError } = await supabase
-    .from("team_memberships")
+    .from("team_roster_members")
     .select("team_id")
     .in("team_id", rows.map((row) => row.id))
     .eq("is_active", true);
