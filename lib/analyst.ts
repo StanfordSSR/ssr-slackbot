@@ -360,37 +360,97 @@ async function executePlanSqlQueries(params: {
   const cappedQueries = params.sqlQueries.slice(0, 3);
   for (let index = 0; index < cappedQueries.length; index += 1) {
     const query = cappedQueries[index];
-    const result = await validateAndExecuteSql({
-      sessionId: params.sessionId,
-      stepIndex: params.stepOffset + index,
-      rationale: query.rationale,
-      sql: query.sql,
-      isAdmin: params.isAdmin,
-      allowedTeamIds: params.allowedTeamIds,
-    });
+    try {
+      const result = await validateAndExecuteSql({
+        sessionId: params.sessionId,
+        stepIndex: params.stepOffset + index,
+        rationale: query.rationale,
+        sql: query.sql,
+        isAdmin: params.isAdmin,
+        allowedTeamIds: params.allowedTeamIds,
+      });
 
-    const citationText = compactSqlRows(result.rows);
-    params.evidence.push({
-      sourceKind: "structured_tool",
-      title: `SQL: ${query.expectedAnswerUse}`,
-      citationText,
-      metadata: {
-        referencedTables: result.referencedTables,
-        sqlFingerprint: result.sqlFingerprint,
-      },
-    });
-    await addQuestionEvidence({
-      sessionId: params.sessionId,
-      sourceKind: "structured_tool",
-      title: `SQL: ${query.expectedAnswerUse}`,
-      citationText,
-      metadata: {
-        referencedTables: result.referencedTables,
-        sqlFingerprint: result.sqlFingerprint,
-        executedSql: result.executedSql,
-      },
-    });
+      const citationText = compactSqlRows(result.rows);
+      params.evidence.push({
+        sourceKind: "structured_tool",
+        title: `SQL: ${query.expectedAnswerUse}`,
+        citationText,
+        metadata: {
+          referencedTables: result.referencedTables,
+          sqlFingerprint: result.sqlFingerprint,
+        },
+      });
+      await addQuestionEvidence({
+        sessionId: params.sessionId,
+        sourceKind: "structured_tool",
+        title: `SQL: ${query.expectedAnswerUse}`,
+        citationText,
+        metadata: {
+          referencedTables: result.referencedTables,
+          sqlFingerprint: result.sqlFingerprint,
+          executedSql: result.executedSql,
+        },
+      });
+    } catch (error) {
+      const fallback = chooseSqlFallback(query);
+      if (!fallback) throw error;
+
+      const output = await runStructuredTool(fallback.tool, fallback.params, params.allowedTeamIds);
+      const citationText = compactToolOutput(fallback.tool, output);
+      params.evidence.push({
+        sourceKind: "structured_tool",
+        title: `Fallback: ${fallback.tool}`,
+        citationText,
+        metadata: {
+          fallbackForSql: query.expectedAnswerUse,
+          sqlError: error instanceof Error ? error.message : String(error),
+        },
+      });
+      await addQuestionEvidence({
+        sessionId: params.sessionId,
+        sourceKind: "structured_tool",
+        title: `Fallback: ${fallback.tool}`,
+        citationText,
+        metadata: {
+          fallbackForSql: query.expectedAnswerUse,
+          sqlError: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
+}
+
+function chooseSqlFallback(query: AnalystPlan["sqlQueries"][number]) {
+  const hint = `${query.rationale} ${query.expectedAnswerUse} ${query.sql}`.toLowerCase();
+
+  if (
+    hint.includes("team_roster_members") ||
+    hint.includes("team size") ||
+    hint.includes("member count") ||
+    hint.includes("roster") ||
+    hint.includes("how many")
+  ) {
+    return {
+      tool: "get_team_directory" as const,
+      params: {},
+    };
+  }
+
+  if (hint.includes("purchase_logs") || hint.includes("purchase") || hint.includes("expense")) {
+    return {
+      tool: "get_purchase_log_rows" as const,
+      params: { limit: 20 },
+    };
+  }
+
+  if (hint.includes("vendor")) {
+    return {
+      tool: "get_vendor_summary" as const,
+      params: {},
+    };
+  }
+
+  return null;
 }
 
 async function runStructuredTool(tool: ToolName, params: Record<string, unknown>, allowedTeamIds: string[]) {
