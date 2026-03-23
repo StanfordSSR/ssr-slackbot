@@ -2,7 +2,7 @@ import { getEnv } from "@/lib/env";
 import { SlackUserIdentity } from "@/types/receipt";
 
 const slackApiBase = "https://slack.com/api";
-const SLACK_TEXT_LIMIT = 35000;
+const SLACK_TEXT_LIMIT = 3800;
 
 async function slackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getEnv("SLACK_BOT_TOKEN");
@@ -70,7 +70,7 @@ export async function postDelayedSlackResponse(responseUrl: string, text: string
   return postSlackResponse(responseUrl, {
     response_type: "ephemeral",
     replace_original: false,
-    text,
+    text: truncateSlackText(text),
     blocks,
   });
 }
@@ -90,7 +90,10 @@ export async function postSlackResponse(
     headers: {
       "Content-Type": "application/json; charset=utf-8",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      text: payload.text ? truncateSlackText(payload.text) : payload.text,
+    }),
     cache: "no-store",
   });
 
