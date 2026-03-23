@@ -14,6 +14,7 @@ import {
   getMonthlySpendByCategoryForTeams,
   getMonthlySpendForTeams,
   getPurchaseCountForTeams,
+  getPurchaseCountsByMonthForTeams,
   getTopPurchasesForTeams,
   getPurchaseLogs,
   getRecentReports,
@@ -1083,6 +1084,35 @@ async function maybeHandleDeterministicPrompt(params: {
       ],
       whyItMatters: null,
       confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates and stored categories.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
+  if (looksLikePurchaseCountQuestion(params.normalizedPrompt) && /(per month|every month|each month|monthly|by month)/.test(params.normalizedPrompt) && isClubWideQuestion(params.normalizedPrompt)) {
+    const startDate = startDateFromContext ?? inferYearStartDate(params.prompt);
+    const rows = await getPurchaseCountsByMonthForTeams({
+      teamIds: params.accessibleTeams.map((team) => team.id),
+      startDate,
+    });
+    const months = buildMonthRange(
+      startDate ?? `${rows[0]?.month ?? new Date().toISOString().slice(0, 7)}-01`,
+      new Date(),
+    );
+    const countByMonth = new Map(rows.map((row) => [row.month, row.count]));
+
+    return formatSlackAnswer({
+      answer: [
+        "SSR purchases per month:",
+        ...months.map((month) => `• ${month}: ${countByMonth.get(month) ?? 0}`),
+      ].join("\n"),
+      evidenceBullets: [
+        "Used an exact month-by-month count over `purchase_logs`, not a limited row fetch.",
+        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Included months through the current month.",
+      ],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High because this is a direct month-by-month count from the purchase log.",
       estimatedCostUsd: 0.001,
       costTier: "light",
       modelTier: "mini",

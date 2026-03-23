@@ -744,6 +744,39 @@ export async function getPurchaseCountForTeams(params: {
   return count ?? 0;
 }
 
+export async function getPurchaseCountsByMonthForTeams(params: {
+  teamIds: string[];
+  startDate?: string | null;
+}) {
+  let query = supabase
+    .from("purchase_logs")
+    .select("purchased_at")
+    .in("team_id", params.teamIds)
+    .order("purchased_at", { ascending: true });
+
+  if (params.startDate) {
+    query = query.gte("purchased_at", params.startDate);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const byMonth = new Map<string, number>();
+  for (const row of data ?? []) {
+    const purchasedAt = typeof row.purchased_at === "string" ? row.purchased_at : null;
+    if (!purchasedAt) continue;
+    const monthKey = purchasedAt.slice(0, 7);
+    byMonth.set(monthKey, (byMonth.get(monthKey) ?? 0) + 1);
+  }
+
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, count]) => ({
+      month,
+      count,
+    }));
+}
+
 export async function getTeamMonthlyMemberCounts(params: {
   teamId: string;
   months: string[];
