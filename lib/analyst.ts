@@ -12,6 +12,7 @@ import {
   getBudgetVsActual,
   getContextSourceVersionKey,
   getMonthlySpendByCategoryForTeams,
+  getMonthlyMemberCountsForTeams,
   getMonthlySpendForTeams,
   getPurchaseCountForTeams,
   getPurchaseCountsByMonthForTeams,
@@ -1183,19 +1184,43 @@ async function maybeHandleDeterministicPrompt(params: {
       startDate ?? `${spendRows[0]?.month ?? new Date().toISOString().slice(0, 7)}-01`,
       new Date(),
     );
+    const perPerson = isPerPersonQuestion(params.normalizedPrompt);
     const spendByMonth = new Map(spendRows.map((row) => [row.month, row.totalCents]));
+    const memberCounts = perPerson
+      ? await getMonthlyMemberCountsForTeams({
+          teamIds: params.accessibleTeams.map((team) => team.id),
+          months,
+        })
+      : null;
+    const memberCountByMonth = new Map(memberCounts?.counts.map((row) => [row.month, row.memberCount]) ?? []);
 
     return formatSlackAnswer({
       answer: [
-        "Total club spend per month:",
-        ...months.map((month) => `• ${month}: $${((spendByMonth.get(month) ?? 0) / 100).toFixed(2)}`),
+        perPerson ? "Total club spend per person per month:" : "Total club spend per month:",
+        ...months.map((month) => {
+          const totalCents = spendByMonth.get(month) ?? 0;
+          if (!perPerson) {
+            return `• ${month}: $${(totalCents / 100).toFixed(2)}`;
+          }
+          const members = Math.max(1, memberCountByMonth.get(month) ?? 1);
+          return `• ${month}: $${(totalCents / 100).toFixed(2)} total, $${(totalCents / 100 / members).toFixed(2)} per person (${members} members)`;
+        }),
       ].join("\n"),
       evidenceBullets: [
         `Summed \`purchase_logs.amount_cents\` by month using \`purchase_logs.purchased_at\` across ${params.accessibleTeams.length} accessible teams.`,
+        perPerson
+          ? memberCounts?.method === "historical_roster"
+            ? "Estimated each month's divisor from historical `team_roster_members` join/leave dates across the accessible teams."
+            : memberCounts?.method === "joined_only"
+              ? "Estimated each month's divisor from `team_roster_members` join dates across the accessible teams; no leave-date field was available."
+              : "Used current `team_roster_members` counts for each month because no historical roster date field was available."
+          : "Reported raw monthly totals only.",
         startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Included months through the current month.",
       ],
       whyItMatters: null,
-      confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates.",
+      confidenceLine: perPerson
+        ? "Confidence: High for spend totals; member-count confidence depends on the historical roster fields available in `team_roster_members`."
+        : "Confidence: High for logged purchases because this is a direct aggregation over purchase dates.",
       estimatedCostUsd: 0.001,
       costTier: "light",
       modelTier: "mini",
