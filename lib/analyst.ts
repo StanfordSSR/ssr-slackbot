@@ -874,6 +874,21 @@ function inferYearStartDate(prompt: string) {
   return null;
 }
 
+function inferStartDateFromPromptOrHistory(prompt: string, historyText: string) {
+  return (
+    inferMonthlyStartDate(prompt)
+    ?? inferYearStartDate(prompt)
+    ?? inferMonthlyStartDate(historyText)
+    ?? inferYearStartDate(historyText)
+  );
+}
+
+function shouldInheritClubMonthlySpendContext(normalizedPrompt: string, historyText: string) {
+  const priorClubMonthlySpend = /(total club spend per month|club spend per month|total club spend per person per month|club monthly spend)/.test(historyText);
+  const promptLooksLikeCorrection = /(include|including|also|as well|asw|redo|fix|correct|supposed to|do it|202\d{2}|this year|last year|since)/.test(normalizedPrompt);
+  return priorClubMonthlySpend && promptLooksLikeCorrection;
+}
+
 function buildMonthRange(startDate: string, endDate: Date) {
   const start = new Date(`${startDate.slice(0, 7)}-01T00:00:00.000Z`);
   const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
@@ -1052,7 +1067,8 @@ async function maybeHandleDeterministicPrompt(params: {
   history: Array<{ speaker: string; text: string }>;
 }) {
   const historyText = params.history.map((item) => item.text.toLowerCase()).join("\n");
-  const startDateFromContext = inferMonthlyStartDate(params.prompt) ?? inferMonthlyStartDate(historyText);
+  const startDateFromContext = inferStartDateFromPromptOrHistory(params.prompt, historyText);
+  const inheritsClubMonthlySpendContext = shouldInheritClubMonthlySpendContext(params.normalizedPrompt, historyText);
 
   if (isCategorySplitQuestion(params.normalizedPrompt) && /club spend per month|total club spend per month/.test(historyText)) {
     const rows = await getMonthlySpendByCategoryForTeams({
@@ -1174,7 +1190,7 @@ async function maybeHandleDeterministicPrompt(params: {
     });
   }
 
-  if (looksLikeClubMonthlySpendQuestion(params.normalizedPrompt)) {
+  if (looksLikeClubMonthlySpendQuestion(params.normalizedPrompt) || inheritsClubMonthlySpendContext) {
     const startDate = startDateFromContext;
     const spendRows = await getMonthlySpendForTeams({
       teamIds: params.accessibleTeams.map((team) => team.id),
@@ -1184,7 +1200,7 @@ async function maybeHandleDeterministicPrompt(params: {
       startDate ?? `${spendRows[0]?.month ?? new Date().toISOString().slice(0, 7)}-01`,
       new Date(),
     );
-    const perPerson = isPerPersonQuestion(params.normalizedPrompt);
+    const perPerson = isPerPersonQuestion(params.normalizedPrompt) || (inheritsClubMonthlySpendContext && isPerPersonQuestion(historyText));
     const spendByMonth = new Map(spendRows.map((row) => [row.month, row.totalCents]));
     const memberCounts = perPerson
       ? await getMonthlyMemberCountsForTeams({
