@@ -777,6 +777,38 @@ export async function getPurchaseCountsByMonthForTeams(params: {
     }));
 }
 
+export async function getMonthlyMemberCountsForTeams(params: {
+  teamIds: string[];
+  months: string[];
+}) {
+  const countsByMonth = new Map<string, number>(params.months.map((month) => [month, 0]));
+  let method: "historical_roster" | "joined_only" | "current_roster_only" = "historical_roster";
+
+  for (const teamId of params.teamIds) {
+    const teamCounts = await getTeamMonthlyMemberCounts({
+      teamId,
+      months: params.months,
+    });
+    if (teamCounts.method === "current_roster_only") {
+      method = "current_roster_only";
+    } else if (teamCounts.method === "joined_only" && method !== "current_roster_only") {
+      method = "joined_only";
+    }
+
+    for (const row of teamCounts.counts) {
+      countsByMonth.set(row.month, (countsByMonth.get(row.month) ?? 0) + row.memberCount);
+    }
+  }
+
+  return {
+    counts: params.months.map((month) => ({
+      month,
+      memberCount: countsByMonth.get(month) ?? 0,
+    })),
+    method,
+  };
+}
+
 export async function getTeamMonthlyMemberCounts(params: {
   teamId: string;
   months: string[];
