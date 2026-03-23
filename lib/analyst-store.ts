@@ -726,6 +726,24 @@ export async function getTopPurchasesForTeams(params: {
   return data ?? [];
 }
 
+export async function getPurchaseCountForTeams(params: {
+  teamIds: string[];
+  startDate?: string | null;
+}) {
+  let query = supabase
+    .from("purchase_logs")
+    .select("id", { count: "exact", head: true })
+    .in("team_id", params.teamIds);
+
+  if (params.startDate) {
+    query = query.gte("purchased_at", params.startDate);
+  }
+
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
+
 export async function getTeamMonthlyMemberCounts(params: {
   teamId: string;
   months: string[];

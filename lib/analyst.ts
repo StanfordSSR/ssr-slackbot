@@ -13,6 +13,7 @@ import {
   getContextSourceVersionKey,
   getMonthlySpendByCategoryForTeams,
   getMonthlySpendForTeams,
+  getPurchaseCountForTeams,
   getTopPurchasesForTeams,
   getPurchaseLogs,
   getRecentReports,
@@ -774,6 +775,11 @@ function looksLikeBiggestPurchasesQuestion(normalizedPrompt: string) {
   return hasPurchaseIntent && hasRankingIntent;
 }
 
+function looksLikePurchaseCountQuestion(normalizedPrompt: string) {
+  return /(how many|number of|count).*(purchase|purchases)/.test(normalizedPrompt)
+    || /(purchase|purchases).*(how many|number of|count)/.test(normalizedPrompt);
+}
+
 function looksLikeStructuredDataQuestion(normalizedPrompt: string) {
   return /(purchase|purchases|expense|expenses|spent|spend|budget|budgets|report|reports|vendor|vendors|receipt|receipts|team|teams|member|members|roster|count|counts|category|categories|monthly|month|year|finance|financial|audit)/.test(
     normalizedPrompt,
@@ -1077,6 +1083,27 @@ async function maybeHandleDeterministicPrompt(params: {
       ],
       whyItMatters: null,
       confidenceLine: "Confidence: High for logged purchases because this is a direct aggregation over purchase dates and stored categories.",
+      estimatedCostUsd: 0.001,
+      costTier: "light",
+      modelTier: "mini",
+    });
+  }
+
+  if (looksLikePurchaseCountQuestion(params.normalizedPrompt) && isClubWideQuestion(params.normalizedPrompt)) {
+    const startDate = startDateFromContext ?? inferYearStartDate(params.prompt);
+    const count = await getPurchaseCountForTeams({
+      teamIds: params.accessibleTeams.map((team) => team.id),
+      startDate,
+    });
+
+    return formatSlackAnswer({
+      answer: `${count} purchases${startDate ? ` since ${startDate.slice(0, 10)}` : ""} across the ${params.accessibleTeams.length} accessible SSR teams.`,
+      evidenceBullets: [
+        "Used an exact count over `purchase_logs`, not a limited row fetch.",
+        startDate ? `Applied start-date filter from ${startDate.slice(0, 10)} onward.` : "Used all available logged purchases.",
+      ],
+      whyItMatters: null,
+      confidenceLine: "Confidence: High because this is a direct exact count from the purchase log.",
       estimatedCostUsd: 0.001,
       costTier: "light",
       modelTier: "mini",
