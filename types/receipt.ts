@@ -19,6 +19,14 @@ export type SlackUserIdentity = {
   email: string;
   displayName: string | null;
   realName: string | null;
+  username?: string | null;
+  isAdmin?: boolean;
+  isOwner?: boolean;
+  isPrimaryOwner?: boolean;
+  isRestricted?: boolean;
+  isUltraRestricted?: boolean;
+  isBot?: boolean;
+  isDeleted?: boolean;
 };
 
 export type LeadTeam = {

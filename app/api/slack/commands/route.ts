@@ -9,6 +9,7 @@ import { ingestUrlContext, parseAddContextInput } from "@/lib/context-ingestion"
 import { refreshSchemaCatalog } from "@/lib/schema-sql";
 import { buildSlackOAuthLink, syncGmailLinkForDays } from "@/lib/gmail-receipts";
 import { syncProfileSlackUsers } from "@/lib/slack-users";
+import { appendUsersToUserGroup, getEligibleChannelMemberIds, resolveEmailsOrMentionsToUserIds } from "@/lib/slack-usergroups";
 import { gmailLinkTeamChoiceBlocks } from "@/lib/slack-blocks";
 import { getSlackUserIdentity, postDelayedSlackResponse, postSlackResponse } from "@/lib/slack";
 import {
@@ -65,10 +66,18 @@ export async function POST(request: Request) {
     return handleRefreshSchemaCommand({ slackUserId, responseUrl });
   }
 
+  if (command === "/ug-add") {
+    return handleUserGroupAddCommand({ text, slackUserId, responseUrl });
+  }
+
+  if (command === "/ug-sync-channel") {
+    return handleUserGroupSyncChannelCommand({ text, slackUserId, responseUrl });
+  }
+
   if (command && command !== "/link") {
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, `/analyze`, `/addcontext`, `/slackusersync`, and `/refreshschema`.",
+      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, `/analyze`, `/addcontext`, `/slackusersync`, `/refreshschema`, `/ug-add`, and `/ug-sync-channel`.",
     });
   }
 
@@ -477,6 +486,150 @@ async function handleRefreshSchemaCommand(params: { slackUserId: string; respons
   return NextResponse.json({
     response_type: "ephemeral",
     text: "Refreshing the schema catalog now. I’ll replace this with the result when it finishes.",
+  });
+}
+
+function isSlackWorkspaceAdmin(identity: Awaited<ReturnType<typeof getSlackUserIdentity>>) {
+  return Boolean(identity.isAdmin || identity.isOwner || identity.isPrimaryOwner);
+}
+
+function normalizeUserGroupHandle(value: string) {
+  return value.trim().replace(/^@/, "").toLowerCase();
+}
+
+function buildUserGroupResultMessage(params: {
+  handle: string;
+  addedCount: number;
+  notFound?: string[];
+  skippedGuestsOrBots?: number;
+  channelLabel?: string;
+}) {
+  const lines = [`✅ Added ${params.addedCount} user${params.addedCount === 1 ? "" : "s"} to @${params.handle}`];
+
+  if (params.channelLabel) {
+    lines[0] = `✅ Added ${params.addedCount} user${params.addedCount === 1 ? "" : "s"} from ${params.channelLabel} to @${params.handle}`;
+  }
+
+  if ((params.skippedGuestsOrBots ?? 0) > 0) {
+    lines.push(`⚠️ Skipped ${params.skippedGuestsOrBots} guest/bot account(s).`);
+  }
+
+  if ((params.notFound?.length ?? 0) > 0) {
+    lines.push(`⚠️ ${params.notFound!.length} entr${params.notFound!.length === 1 ? "y was" : "ies were"} not found:`);
+    for (const item of params.notFound!) {
+      lines.push(`- ${item}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function handleUserGroupAddCommand(params: { text: string; slackUserId: string; responseUrl: string }) {
+  const match = params.text.match(/^(\S+)\s+(.+)$/);
+  if (!match) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Usage: `/ug-add group_handle emails_or_usernames`",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  if (!isSlackWorkspaceAdmin(identity)) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "❌ You do not have permission to use this command.",
+    });
+  }
+
+  const groupHandle = normalizeUserGroupHandle(match[1]);
+  const rawTargets = match[2];
+
+  after(async () => {
+    try {
+      const resolved = await resolveEmailsOrMentionsToUserIds(rawTargets);
+      const result = await appendUsersToUserGroup({
+        groupHandle,
+        userIds: resolved.userIds,
+      });
+
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: buildUserGroupResultMessage({
+          handle: result.normalizedHandle,
+          addedCount: result.addedCount,
+          notFound: resolved.notFound,
+        }),
+      });
+    } catch (error) {
+      await postDelayedSlackResponse(
+        params.responseUrl,
+        `User group update failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: `Updating @${groupHandle} now. I’ll replace this with the result when it finishes.`,
+  });
+}
+
+async function handleUserGroupSyncChannelCommand(params: { text: string; slackUserId: string; responseUrl: string }) {
+  const match = params.text.match(/^(\S+)\s+(.+)$/);
+  if (!match) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Usage: `/ug-sync-channel group_handle #channel-name`",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  if (!isSlackWorkspaceAdmin(identity)) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "❌ You do not have permission to use this command.",
+    });
+  }
+
+  const groupHandle = normalizeUserGroupHandle(match[1]);
+  const channelReference = match[2].trim();
+
+  after(async () => {
+    try {
+      const members = await getEligibleChannelMemberIds(channelReference);
+      if (!members.channelId) {
+        await postSlackResponse(params.responseUrl, {
+          replace_original: true,
+          text: `I couldn't find a Slack channel matching ${channelReference}.`,
+        });
+        return;
+      }
+
+      const result = await appendUsersToUserGroup({
+        groupHandle,
+        userIds: members.eligibleUserIds,
+      });
+
+      await postSlackResponse(params.responseUrl, {
+        replace_original: true,
+        text: buildUserGroupResultMessage({
+          handle: result.normalizedHandle,
+          addedCount: result.addedCount,
+          skippedGuestsOrBots: members.skippedGuestsOrBots.length,
+          channelLabel: channelReference,
+        }),
+      });
+    } catch (error) {
+      await postDelayedSlackResponse(
+        params.responseUrl,
+        `Channel sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: `Syncing ${channelReference} into @${groupHandle} now. I’ll replace this with the result when it finishes.`,
   });
 }
 

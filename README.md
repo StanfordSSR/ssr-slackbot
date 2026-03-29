@@ -56,15 +56,22 @@ on public.teams (is_active);
 Use these bot scopes:
 - `app_mentions:read`
 - `channels:history`
+- `channels:read`
 - `chat:write`
 - `files:read`
+- `groups:read`
 - `im:history`
 - `im:write`
+- `conversations:read`
+- `usergroups:read`
+- `usergroups:write`
 - `users:read`
 - `users:read.email`
 
 Configure a slash command:
 - `/link` -> `https://YOUR_DOMAIN/api/slack/commands`
+- `/ug-add` -> `https://YOUR_DOMAIN/api/slack/commands`
+- `/ug-sync-channel` -> `https://YOUR_DOMAIN/api/slack/commands`
 
 ## Slack events and interactivity
 
