@@ -647,6 +647,23 @@ export async function updateAmazonAccountLinkTokens(params: {
   if (error) throw error;
 }
 
+export async function updateAmazonAccountLinkChannel(params: {
+  linkId: string;
+  slackChannelId: string;
+}) {
+  const { data, error } = await supabase
+    .from("amazon_account_links")
+    .update({ slack_channel_id: params.slackChannelId })
+    .eq("id", params.linkId)
+    .select(
+      "id, linked_by_profile_id, gmail_email, slack_channel_id, google_subject_id, refresh_token_encrypted, access_token, access_token_expires_at, is_active, last_scan_started_at, last_scan_completed_at",
+    )
+    .single();
+
+  if (error) throw error;
+  return data as AmazonAccountLink;
+}
+
 export async function markAmazonScanStarted(linkId: string) {
   const { error } = await supabase
     .from("amazon_account_links")

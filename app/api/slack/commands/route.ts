@@ -18,6 +18,7 @@ import {
   getActiveGmailAccountLinksForProfile,
   getLeadTeamsForUser,
   getTeamById,
+  updateAmazonAccountLinkChannel,
 } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -37,6 +38,7 @@ export async function POST(request: Request) {
   const slackUserId = typeof body.user_id === "string" ? body.user_id : "";
   const command = typeof body.command === "string" ? body.command : "";
   const responseUrl = typeof body.response_url === "string" ? body.response_url : "";
+  const channelId = typeof body.channel_id === "string" ? body.channel_id : "";
 
   if (command === "/scanemail") {
     return handleScanEmailCommand({ text, slackUserId, responseUrl });
@@ -48,6 +50,10 @@ export async function POST(request: Request) {
 
   if (command === "/amazonlink") {
     return handleAmazonLinkCommand({ text, slackUserId });
+  }
+
+  if (command === "/amazonsetchannel") {
+    return handleAmazonSetChannelCommand({ slackUserId, channelId });
   }
 
   if (command === "/analyze") {
@@ -77,7 +83,7 @@ export async function POST(request: Request) {
   if (command && command !== "/link") {
     return NextResponse.json({
       response_type: "ephemeral",
-      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsync`, `/analyze`, `/addcontext`, `/slackusersync`, `/refreshschema`, `/ug-add`, and `/ug-sync-channel`.",
+      text: "This endpoint is for `/link`, `/scanemail`, `/amazonlink`, `/amazonsetchannel`, `/amazonsync`, `/analyze`, `/addcontext`, `/slackusersync`, `/refreshschema`, `/ug-add`, and `/ug-sync-channel`.",
     });
   }
 
@@ -258,6 +264,42 @@ async function handleAmazonLinkCommand(params: { text: string; slackUserId: stri
         },
       },
     ],
+  });
+}
+
+async function handleAmazonSetChannelCommand(params: { slackUserId: string; channelId: string }) {
+  if (!params.channelId) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Slack didn't send a channel for this command. Try again from the channel you want Amazon posts to use.",
+    });
+  }
+
+  const identity = await getSlackUserIdentity(params.slackUserId);
+  const profile = await findProfileByEmail(identity.email);
+  if (!profile?.is_admin) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Only admins can change the Amazon posting channel.",
+    });
+  }
+
+  const link = await getActiveAmazonAccountLink();
+  if (!link) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "No Amazon inbox is linked yet. Run `/amazonlink <email> <channel-id>` first.",
+    });
+  }
+
+  const updated = await updateAmazonAccountLinkChannel({
+    linkId: link.id,
+    slackChannelId: params.channelId,
+  });
+
+  return NextResponse.json({
+    response_type: "ephemeral",
+    text: `Amazon auto-email purchase posts will now go to <#${updated.slack_channel_id}> for ${updated.gmail_email}.`,
   });
 }
 

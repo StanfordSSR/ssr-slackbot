@@ -70,6 +70,7 @@ Use these bot scopes:
 
 Configure a slash command:
 - `/link` -> `https://YOUR_DOMAIN/api/slack/commands`
+- `/amazonsetchannel` -> `https://YOUR_DOMAIN/api/slack/commands`
 - `/ug-add` -> `https://YOUR_DOMAIN/api/slack/commands`
 - `/ug-sync-channel` -> `https://YOUR_DOMAIN/api/slack/commands`
 
