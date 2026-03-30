@@ -136,7 +136,7 @@ export async function extractAmazonOrderFromEmail(input: {
           {
             type: "input_text",
             text:
-              "You extract Amazon order purchase data from transactional emails for a robotics club finance workflow. Return one order-level purchase only. item_name should be the clearest single main ordered item label. amount_total must be the grand total for the order. Do not invent values. If item name or total is unclear, return null for that field and explain in notes.",
+              "You extract Amazon order purchase data from transactional emails for a robotics club finance workflow. Return one order-level purchase only. item_name should be the clearest single main ordered item label. amount_total must be the grand total for the order. If the email clearly shows multiple distinct grand totals or order totals that belong to the same order email, add those distinct totals together, but do not double-count repeated copies of the same amount. Do not invent values. If item name or total is unclear, return null for that field and explain in notes.",
           },
         ],
       },

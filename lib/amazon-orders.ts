@@ -129,6 +129,7 @@ async function ingestAmazonOrderMessage(params: { link: AmazonAccountLink; acces
     receivedAt: metadata.receivedAt,
     bodyText: combinedText,
   });
+  const normalizedExtraction = applyAmazonGrandTotalFallback(extraction, combinedText);
 
   const ingestion = await createAmazonOrderIngestion({
     amazonLinkId: link.id,
@@ -137,11 +138,11 @@ async function ingestAmazonOrderMessage(params: { link: AmazonAccountLink; acces
     senderEmail: metadata.senderEmail,
     subject: metadata.subject,
     receivedAt: metadata.receivedAt,
-    extraction,
+    extraction: normalizedExtraction,
   });
 
   try {
-    if (!extraction.item_name || extraction.amount_total == null) {
+    if (!normalizedExtraction.item_name || normalizedExtraction.amount_total == null) {
       await markAmazonOrderIngestionFailed(ingestion.id, "Could not extract an Amazon item name and grand total from the email.");
       return 0;
     }
@@ -154,13 +155,13 @@ async function ingestAmazonOrderMessage(params: { link: AmazonAccountLink; acces
 
     const result = await postMessage(
       link.slack_channel_id,
-      `Amazon purchase: ${(extraction.item_name || "Amazon order").replace(/\s+/g, " ").trim().slice(0, 120)} - ${formatAmount(extraction.amount_total, extraction.currency)}`,
+      `Amazon purchase: ${(normalizedExtraction.item_name || "Amazon order").replace(/\s+/g, " ").trim().slice(0, 120)} - ${formatAmount(normalizedExtraction.amount_total, normalizedExtraction.currency)}`,
       amazonClaimBlocks({
         ingestionId: ingestion.id,
-        itemName: extraction.item_name,
-        amountTotal: extraction.amount_total,
-        currency: extraction.currency,
-        purchaseDate: extraction.purchase_date || metadata.receivedAt?.slice(0, 10) || null,
+        itemName: normalizedExtraction.item_name,
+        amountTotal: normalizedExtraction.amount_total,
+        currency: normalizedExtraction.currency,
+        purchaseDate: normalizedExtraction.purchase_date || metadata.receivedAt?.slice(0, 10) || null,
         teams,
       }),
     );
@@ -187,6 +188,51 @@ function formatAmount(amount: number, currency: string | null) {
   } catch {
     return `${currency || "USD"} ${amount.toFixed(2)}`;
   }
+}
+
+function applyAmazonGrandTotalFallback(
+  extraction: Awaited<ReturnType<typeof extractAmazonOrderFromEmail>>,
+  emailText: string,
+) {
+  const distinctGrandTotals = extractDistinctAmazonGrandTotals(emailText);
+  if (distinctGrandTotals.length <= 1) {
+    return extraction;
+  }
+
+  const summedTotal = Number(
+    distinctGrandTotals.reduce((sum, value) => sum + value, 0).toFixed(2),
+  );
+
+  return {
+    ...extraction,
+    amount_total: summedTotal,
+    notes: [
+      extraction.notes?.trim(),
+      `Summed ${distinctGrandTotals.length} distinct grand totals from the email body: ${distinctGrandTotals.map((value) => value.toFixed(2)).join(", ")}.`,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  };
+}
+
+function extractDistinctAmazonGrandTotals(emailText: string) {
+  const matches = new Set<number>();
+  const patterns = [
+    /\bgrand total\b[\s\S]{0,80}?\$([0-9][0-9,]*(?:\.[0-9]{2})?)/gi,
+    /\border total\b[\s\S]{0,80}?\$([0-9][0-9,]*(?:\.[0-9]{2})?)/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(emailText)) !== null) {
+      const parsed = Number(match[1].replace(/,/g, ""));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        matches.add(Number(parsed.toFixed(2)));
+      }
+    }
+  }
+
+  return [...matches].sort((a, b) => a - b);
 }
 
 function isExpired(expiresAt: string | null) {
