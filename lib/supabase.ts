@@ -129,11 +129,37 @@ export async function getProfilesForSlackSync() {
   }>;
 }
 
+export async function getTeamRosterMembersForSlackSync() {
+  const { data, error } = await supabase
+    .from("team_roster_members")
+    .select("id, stanford_email, full_name, slack_user_id")
+    .not("stanford_email", "is", null)
+    .order("stanford_email");
+
+  if (error) throw error;
+
+  return (data ?? []) as Array<{
+    id: string;
+    stanford_email: string | null;
+    full_name: string | null;
+    slack_user_id: string | null;
+  }>;
+}
+
 export async function updateProfileSlackUserId(params: { profileId: string; slackUserId: string }) {
   const { error } = await supabase
     .from("profiles")
     .update({ slack_user_id: params.slackUserId })
     .eq("id", params.profileId);
+
+  if (error) throw error;
+}
+
+export async function updateTeamRosterMemberSlackUserId(params: { rosterMemberId: string; slackUserId: string }) {
+  const { error } = await supabase
+    .from("team_roster_members")
+    .update({ slack_user_id: params.slackUserId })
+    .eq("id", params.rosterMemberId);
 
   if (error) throw error;
 }

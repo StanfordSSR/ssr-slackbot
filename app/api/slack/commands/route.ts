@@ -371,7 +371,7 @@ async function handleSlackUserSyncCommand(params: { slackUserId: string; respons
 
       await postSlackResponse(params.responseUrl, {
         replace_original: true,
-        text: `Slack user sync finished. Added ${result.matched}, already linked ${result.alreadyLinked}, failed ${result.failed}.`,
+        text: `Slack user sync finished. Added ${result.matched} total (${result.matchedProfiles} profiles, ${result.matchedRosterMembers} roster members), already linked ${result.alreadyLinked}, failed ${result.failed}.`,
       });
     } catch (error) {
       await postDelayedSlackResponse(
