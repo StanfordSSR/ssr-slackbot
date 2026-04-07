@@ -185,12 +185,13 @@ export async function POST(request: Request) {
   }
 
   const recipientEmails = normalizeEmails(Array.isArray(body.recipient_emails) ? body.recipient_emails : []);
+  const eventMetadata = getEventAnnouncementMetadata(body.metadata);
   if (!body.idempotency_key?.trim()) return badRequest("idempotency_key is required");
   if (!body.type?.trim()) return badRequest("type is required");
   if (!body.title?.trim()) return badRequest("title is required");
   if (!body.message?.trim()) return badRequest("message is required");
   if (recipientEmails.length === 0) return badRequest("recipient_emails must include at least one email");
-  if ((body.cta_label && !body.cta_url) || (!body.cta_label && body.cta_url)) {
+  if (!eventMetadata && ((body.cta_label && !body.cta_url) || (!body.cta_label && body.cta_url))) {
     return badRequest("cta_label and cta_url must be provided together");
   }
 
@@ -249,8 +250,6 @@ export async function POST(request: Request) {
   const mappedByEmail = new Map(
     mappedUsers.map((entry) => [entry.email, { slackUserId: entry.slackUserId, profileId: entry.profileId }]),
   );
-  const eventMetadata = getEventAnnouncementMetadata(body.metadata);
-
   const results: NotifyResult[] = [];
   let delivered = 0;
   let failed = 0;
