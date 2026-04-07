@@ -1,4 +1,5 @@
 import { GmailAttachmentChoicePayload, PendingReceiptPayload, ReceiptExtraction } from "@/types/receipt";
+import type { EventRsvpPayload } from "@/lib/slack-blocks";
 
 export function toDataUrl(bytes: ArrayBuffer, mimeType: string) {
   const base64 = Buffer.from(bytes).toString("base64");
@@ -95,4 +96,8 @@ export function decodeAmazonClaimValue(value: string) {
     ingestionId: value.slice(0, separatorIndex),
     teamId: value.slice(separatorIndex + 1),
   };
+}
+
+export function decodeEventRsvpValue(value: string): EventRsvpPayload {
+  return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as EventRsvpPayload;
 }

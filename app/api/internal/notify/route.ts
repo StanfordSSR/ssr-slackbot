@@ -7,6 +7,7 @@ import {
   getProfileSlackMappingsByEmails,
   updateProfileSlackUserId,
 } from "@/lib/supabase";
+import { eventAnnouncementBlocks } from "@/lib/slack-blocks";
 import { lookupSlackUserIdByEmail, postDirectMessageToUser } from "@/lib/slack";
 
 export const runtime = "nodejs";
@@ -30,6 +31,15 @@ type NotifyResult = {
   ok: boolean;
   slack_user_id?: string;
   error?: string;
+};
+
+type EventAnnouncementMetadata = {
+  announcementId: string | null;
+  announcementType: "event";
+  location: string | null;
+  eventAt: string | null;
+  recipientEmail: string | null;
+  rsvpCallbackUrl: string | null;
 };
 
 function unauthorized() {
@@ -93,6 +103,33 @@ function buildBlocks(body: NotifyRequestBody) {
 
 function buildText(body: NotifyRequestBody) {
   return [body.title, body.message, body.cta_url || null].filter(Boolean).join("\n");
+}
+
+function getEventAnnouncementMetadata(metadata: Record<string, unknown> | undefined) {
+  if (!metadata || metadata.announcementType !== "event") {
+    return null;
+  }
+
+  return {
+    announcementId: typeof metadata.announcementId === "string" ? metadata.announcementId : null,
+    announcementType: "event",
+    location: typeof metadata.location === "string" ? metadata.location : null,
+    eventAt: typeof metadata.eventAt === "string" ? metadata.eventAt : null,
+    recipientEmail: typeof metadata.recipientEmail === "string" ? metadata.recipientEmail : null,
+    rsvpCallbackUrl: typeof metadata.rsvpCallbackUrl === "string" ? metadata.rsvpCallbackUrl : null,
+  } satisfies EventAnnouncementMetadata;
+}
+
+function splitEventDetails(message: string, location: string | null) {
+  const trimmed = message.trim();
+  if (!trimmed) return "";
+
+  const lines = trimmed.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return "";
+  if (location && lines[0].toLowerCase() === location.trim().toLowerCase()) {
+    return lines.slice(1).join("\n");
+  }
+  return trimmed;
 }
 
 function describeError(error: unknown) {
@@ -212,8 +249,7 @@ export async function POST(request: Request) {
   const mappedByEmail = new Map(
     mappedUsers.map((entry) => [entry.email, { slackUserId: entry.slackUserId, profileId: entry.profileId }]),
   );
-  const blocks = buildBlocks({ ...body, recipient_emails: recipientEmails });
-  const text = buildText({ ...body, recipient_emails: recipientEmails });
+  const eventMetadata = getEventAnnouncementMetadata(body.metadata);
 
   const results: NotifyResult[] = [];
   let delivered = 0;
@@ -222,6 +258,20 @@ export async function POST(request: Request) {
   for (const email of recipientEmails) {
     try {
       const slackUserId = await resolveSlackUserId(email, mappedByEmail);
+      const blocks =
+        eventMetadata?.announcementId && eventMetadata.rsvpCallbackUrl
+          ? eventAnnouncementBlocks({
+              title: body.title,
+              eventAt: eventMetadata.eventAt ?? null,
+              location: eventMetadata.location ?? null,
+              details: splitEventDetails(body.message, eventMetadata.location ?? null),
+              recipientEmail: eventMetadata.recipientEmail || email,
+              announcementId: eventMetadata.announcementId,
+              callbackUrl: eventMetadata.rsvpCallbackUrl,
+            })
+          : buildBlocks({ ...body, recipient_emails: recipientEmails });
+      const text = buildText({ ...body, recipient_emails: recipientEmails });
+
       await postDirectMessageToUser(slackUserId, text, blocks);
       results.push({ email, ok: true, slack_user_id: slackUserId });
       delivered += 1;

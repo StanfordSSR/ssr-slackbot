@@ -4,8 +4,8 @@ import { verifySlackSignature } from "@/lib/slack-signature";
 import { getEnv } from "@/lib/env";
 import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
 import { recordAuditEvent } from "@/lib/audit";
-import { decodeActionValue, decodeAmazonClaimValue, decodeAttachmentSelectValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
-import { amazonClaimDecisionBlocks, receiptDecisionBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
+import { decodeActionValue, decodeAmazonClaimValue, decodeAttachmentSelectValue, decodeEventRsvpValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
+import { amazonClaimDecisionBlocks, eventAnnouncementDecisionBlocks, receiptDecisionBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
   attachAmazonPurchaseLog,
@@ -425,6 +425,69 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
 
     return NextResponse.json({
       text: "Claiming Amazon purchase...",
+      replace_original: false,
+    });
+  }
+
+  if (action.action_id.startsWith("event_rsvp_")) {
+    const responseUrl = payload.response_url;
+    if (!responseUrl) {
+      return NextResponse.json({ text: "Slack did not include a response URL for this RSVP.", replace_original: false });
+    }
+
+    const decoded = decodeEventRsvpValue(actionValue);
+
+    after(async () => {
+      try {
+        const sharedSecret = getEnv("INTERNAL_NOTIFY_SHARED_SECRET");
+        if (!sharedSecret) {
+          throw new Error("Missing INTERNAL_NOTIFY_SHARED_SECRET.");
+        }
+
+        const response = await fetch(decoded.callbackUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${sharedSecret}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({
+            announcement_id: decoded.announcementId,
+            recipient_email: decoded.recipientEmail,
+            response: decoded.response,
+          }),
+          cache: "no-store",
+        });
+
+        const json = (await response.json().catch(() => null)) as
+          | { ok?: boolean; counts?: { yes?: number; maybe?: number; no?: number } }
+          | null;
+
+        if (!response.ok || !json?.ok) {
+          throw new Error(`RSVP callback failed${response.ok ? "" : `: ${response.status}`}`);
+        }
+
+        await postSlackResponse(responseUrl, {
+          text: `RSVP recorded: ${decoded.response}`,
+          replace_original: true,
+          blocks: eventAnnouncementDecisionBlocks({
+            title: decoded.title,
+            eventAt: decoded.eventAt,
+            location: decoded.location,
+            response: decoded.response,
+            counts: json.counts ?? null,
+          }),
+        });
+      } catch (error) {
+        await postSlackResponse(responseUrl, {
+          text: `RSVP failed: ${describeError(error)}`,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      }
+    });
+
+    return NextResponse.json({
+      text: "Recording RSVP...",
       replace_original: false,
     });
   }

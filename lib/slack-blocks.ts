@@ -1,6 +1,17 @@
 import { GmailAttachmentChoicePayload, LeadTeam, ReceiptPendingPayload, ReceiptExtraction } from "@/types/receipt";
 import { encodeActionValue, encodeAmazonClaimValue, encodeAttachmentSelectValue, isGmailPendingReceiptPayload, prettyCurrency } from "@/lib/receipt-utils";
 
+export type EventRsvpPayload = {
+  source: "event_rsvp";
+  announcementId: string;
+  recipientEmail: string;
+  response: "yes" | "maybe" | "no";
+  callbackUrl: string;
+  title: string;
+  eventAt: string | null;
+  location: string | null;
+};
+
 export function receiptReviewBlocks(params: { teamName: string; payload: ReceiptPendingPayload }) {
   const { teamName, payload } = params;
   const receipt = payload.extraction;
@@ -220,6 +231,156 @@ export function amazonClaimDecisionBlocks(params: {
       ],
     },
   ];
+}
+
+export function eventAnnouncementBlocks(params: {
+  title: string;
+  eventAt: string | null;
+  location: string | null;
+  details: string;
+  recipientEmail: string;
+  announcementId: string;
+  callbackUrl: string;
+}) {
+  const fields = [
+    {
+      type: "mrkdwn",
+      text: `*Date & time*\n${formatEventDateTime(params.eventAt)}`,
+    },
+    {
+      type: "mrkdwn",
+      text: `*Location*\n${params.location?.trim() || "TBD"}`,
+    },
+  ];
+
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${params.title}*`,
+      },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "Event announcement from SSR HQ",
+        },
+      ],
+    },
+    {
+      type: "divider",
+    },
+    {
+      type: "section",
+      fields,
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Details*\n${params.details || "No additional details."}`,
+      },
+    },
+    {
+      type: "actions",
+      elements: [
+        buildEventRsvpButton("Yes", "primary", {
+          source: "event_rsvp",
+          announcementId: params.announcementId,
+          recipientEmail: params.recipientEmail,
+          response: "yes",
+          callbackUrl: params.callbackUrl,
+          title: params.title,
+          eventAt: params.eventAt,
+          location: params.location,
+        }),
+        buildEventRsvpButton("Maybe", undefined, {
+          source: "event_rsvp",
+          announcementId: params.announcementId,
+          recipientEmail: params.recipientEmail,
+          response: "maybe",
+          callbackUrl: params.callbackUrl,
+          title: params.title,
+          eventAt: params.eventAt,
+          location: params.location,
+        }),
+        buildEventRsvpButton("No", "danger", {
+          source: "event_rsvp",
+          announcementId: params.announcementId,
+          recipientEmail: params.recipientEmail,
+          response: "no",
+          callbackUrl: params.callbackUrl,
+          title: params.title,
+          eventAt: params.eventAt,
+          location: params.location,
+        }),
+      ],
+    },
+  ];
+}
+
+export function eventAnnouncementDecisionBlocks(params: {
+  title: string;
+  eventAt: string | null;
+  location: string | null;
+  response: "yes" | "maybe" | "no";
+  counts?: { yes?: number; maybe?: number; no?: number } | null;
+}) {
+  const responseLabel = params.response === "yes" ? "Yes" : params.response === "maybe" ? "Maybe" : "No";
+  const countsText = params.counts
+    ? `\nYes ${params.counts.yes ?? 0} • Maybe ${params.counts.maybe ?? 0} • No ${params.counts.no ?? 0}`
+    : "";
+
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${params.title}*\n*Date & time:* ${formatEventDateTime(params.eventAt)}\n*Location:* ${params.location?.trim() || "TBD"}`,
+      },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `RSVP recorded: *${responseLabel}*${countsText}`,
+        },
+      ],
+    },
+  ];
+}
+
+function buildEventRsvpButton(
+  label: "Yes" | "Maybe" | "No",
+  style: "primary" | "danger" | undefined,
+  payload: EventRsvpPayload,
+) {
+  return {
+    type: "button",
+    text: { type: "plain_text", text: label },
+    style,
+    action_id: `event_rsvp_${payload.response}`,
+    value: Buffer.from(JSON.stringify(payload), "utf8").toString("base64url"),
+  };
+}
+
+function formatEventDateTime(eventAt: string | null) {
+  if (!eventAt) return "TBD";
+  const date = new Date(eventAt);
+  if (Number.isNaN(date.getTime())) return eventAt;
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Los_Angeles",
+  }).format(date);
 }
 export function teamChoiceBlocks(params: {
   teams: LeadTeam[];
