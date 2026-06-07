@@ -11,6 +11,9 @@ export type LeadProfile = {
   full_name: string | null;
   email: string | null;
   is_admin?: boolean;
+  role?: string | null;
+  is_president?: boolean;
+  is_financial_officer?: boolean;
 };
 
 export type GmailAccountLink = {
@@ -104,12 +107,21 @@ export type InternalNotificationRequest = {
 export async function findProfileByEmail(email: string) {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, email, is_admin, slack_user_id")
+    .select("id, full_name, email, is_admin, role, is_president, is_financial_officer, slack_user_id")
     .ilike("email", email)
     .maybeSingle();
 
   if (error) throw error;
-  return data as { id: string; full_name: string | null; email: string | null; is_admin?: boolean; slack_user_id?: string | null } | null;
+  return data as {
+    id: string;
+    full_name: string | null;
+    email: string | null;
+    is_admin?: boolean;
+    role?: string | null;
+    is_president?: boolean;
+    is_financial_officer?: boolean;
+    slack_user_id?: string | null;
+  } | null;
 }
 
 export async function getProfilesForSlackSync() {
@@ -431,12 +443,13 @@ export async function clearSlackReceiptConfirmation(params: { slackFileId: strin
 
 export async function createAmazonPurchaseLog(params: {
   purchaseId?: string;
-  teamId: string;
+  teamId: string | null;
   profileId: string;
   personName: string | null;
   itemName: string;
   amountTotal: number;
   purchaseDate: string | null;
+  expenseType?: "team" | "leadership";
 }) {
   const purchaseId = params.purchaseId || crypto.randomUUID();
   const insertPayload = {
@@ -450,6 +463,7 @@ export async function createAmazonPurchaseLog(params: {
     person_name: params.personName,
     payment_method: "amazon",
     category: "equipment",
+    expense_type: params.expenseType ?? "team",
     receipt_path: null,
     receipt_file_name: null,
     receipt_uploaded_at: null,
@@ -785,9 +799,24 @@ export async function getAmazonOrderIngestionById(ingestionId: string) {
   return data as AmazonOrderIngestion | null;
 }
 
+export async function getPendingAmazonOrderIngestionsWithMessages() {
+  const { data, error } = await supabase
+    .from("amazon_order_ingestions")
+    .select(
+      "id, amazon_link_id, gmail_message_id, gmail_thread_id, sender_email, subject, received_at, item_name, amount_total, currency, purchase_date, slack_channel_id, slack_message_ts, claimed_team_id, claimed_by_profile_id, claimed_at, purchase_log_id, status, error_text",
+    )
+    .eq("status", "pending_claim")
+    .not("slack_channel_id", "is", null)
+    .not("slack_message_ts", "is", null)
+    .order("received_at", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as AmazonOrderIngestion[];
+}
+
 export async function claimAmazonOrderIngestion(params: {
   ingestionId: string;
-  teamId: string;
+  teamId: string | null;
   profileId: string;
 }) {
   const claimedAt = new Date().toISOString();

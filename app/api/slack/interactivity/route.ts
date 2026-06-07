@@ -76,6 +76,23 @@ function describeError(error: unknown) {
   return String(error);
 }
 
+function canApproveLeadershipAmazonExpense(profile: Awaited<ReturnType<typeof findProfileByEmail>>) {
+  if (!profile) return false;
+  const role = profile.role?.toLowerCase();
+  return Boolean(
+    profile.is_admin ||
+      profile.is_president ||
+      profile.is_financial_officer ||
+      role === "admin" ||
+      role === "president" ||
+      role === "financial_officer",
+  );
+}
+
+function isUuidLike(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
   const signingSecret = getEnv("SLACK_SIGNING_SECRET")!;
@@ -331,30 +348,60 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
           return;
         }
 
-        const team = await getTeamById(decoded.teamId);
-        if (!team) {
-          await postSlackResponse(responseUrl, {
-            text: "That team was not found.",
-            replace_original: false,
-            response_type: "ephemeral",
-          });
-          return;
-        }
+        const normalizedClaimTarget = decoded.teamId.trim().toLowerCase();
+        const isLeadershipClaim =
+          action.action_id === "claim_amazon_order_leadership" ||
+          normalizedClaimTarget === "leadership";
+        let claimLabel = "Leadership / Operations";
+        let teamIdForPurchase: string | null = null;
 
-        const leadTeams = await getLeadTeamsForUser(profile.id);
-        const canClaim = Boolean(profile.is_admin) || leadTeams.some((leadTeam) => leadTeam.id === decoded.teamId);
-        if (!canClaim) {
-          await postSlackResponse(responseUrl, {
-            text: "You can only claim Amazon purchases for teams you lead unless you're an admin.",
-            replace_original: false,
-            response_type: "ephemeral",
-          });
-          return;
+        if (isLeadershipClaim) {
+          if (!canApproveLeadershipAmazonExpense(profile)) {
+            await postSlackResponse(responseUrl, {
+              text: "Only FOs/Presidents can approve leadership expenses.",
+              replace_original: false,
+              response_type: "ephemeral",
+            });
+            return;
+          }
+        } else {
+          if (!isUuidLike(decoded.teamId)) {
+            await postSlackResponse(responseUrl, {
+              text: "That Amazon claim target was invalid.",
+              replace_original: false,
+              response_type: "ephemeral",
+            });
+            return;
+          }
+
+          const team = await getTeamById(decoded.teamId);
+          if (!team) {
+            await postSlackResponse(responseUrl, {
+              text: "That team was not found.",
+              replace_original: false,
+              response_type: "ephemeral",
+            });
+            return;
+          }
+
+          const leadTeams = await getLeadTeamsForUser(profile.id);
+          const canClaim = Boolean(profile.is_admin) || leadTeams.some((leadTeam) => leadTeam.id === decoded.teamId);
+          if (!canClaim) {
+            await postSlackResponse(responseUrl, {
+              text: "You can only claim Amazon purchases for teams you lead unless you're an admin.",
+              replace_original: false,
+              response_type: "ephemeral",
+            });
+            return;
+          }
+
+          claimLabel = team.name;
+          teamIdForPurchase = decoded.teamId;
         }
 
         const claimed = await claimAmazonOrderIngestion({
           ingestionId: decoded.ingestionId,
-          teamId: decoded.teamId,
+          teamId: teamIdForPurchase,
           profileId: profile.id,
         });
 
@@ -370,12 +417,13 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
         const purchaseId = crypto.randomUUID();
         await createAmazonPurchaseLog({
           purchaseId,
-          teamId: decoded.teamId,
+          teamId: teamIdForPurchase,
           profileId: profile.id,
           personName: profile.full_name || identity.realName || identity.displayName,
           itemName: ingestion.item_name || "Amazon order",
           amountTotal: ingestion.amount_total || 0,
           purchaseDate: ingestion.purchase_date,
+          expenseType: isLeadershipClaim ? "leadership" : "team",
         });
         await attachAmazonPurchaseLog({
           ingestionId: decoded.ingestionId,
@@ -387,11 +435,11 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
           action: "purchase.added",
           targetType: "amazon_order_ingestion",
           targetId: decoded.ingestionId,
-          summary: `Bot added Amazon purchase for ${team.name} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"}.`,
+          summary: `Bot added Amazon purchase for ${claimLabel} on behalf of ${profile.full_name || identity.realName || identity.displayName || "Unknown user"}.`,
           details: {
             source: "amazon",
-            teamId: decoded.teamId,
-            teamName: team.name,
+            teamId: teamIdForPurchase,
+            teamName: claimLabel,
             purchaseId,
             ingestionId: decoded.ingestionId,
             itemName: ingestion.item_name,
@@ -401,14 +449,15 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
             slackUserId: payload.user.id,
             actorName: profile.full_name || identity.realName || identity.displayName,
             automated: true,
+            expenseType: isLeadershipClaim ? "leadership" : "team",
           },
         });
 
         await postSlackResponse(responseUrl, {
-          text: `Claimed by ${team.name}`,
+          text: `Claimed by ${claimLabel}`,
           replace_original: true,
           blocks: amazonClaimDecisionBlocks({
-            teamName: team.name,
+            teamName: claimLabel,
             itemName: ingestion.item_name || "Amazon order",
             amountTotal: ingestion.amount_total || 0,
             currency: ingestion.currency,
@@ -444,26 +493,44 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
           throw new Error("Missing INTERNAL_NOTIFY_SHARED_SECRET.");
         }
 
+        const callbackPayload = {
+          announcement_id: decoded.announcementId,
+          recipient_email: decoded.recipientEmail,
+          response: decoded.response,
+        };
+
         const response = await fetch(decoded.callbackUrl, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${sharedSecret}`,
             "Content-Type": "application/json; charset=utf-8",
           },
-          body: JSON.stringify({
-            announcement_id: decoded.announcementId,
-            recipient_email: decoded.recipientEmail,
-            response: decoded.response,
-          }),
+          body: JSON.stringify(callbackPayload),
           cache: "no-store",
         });
 
-        const json = (await response.json().catch(() => null)) as
-          | { ok?: boolean; counts?: { yes?: number; maybe?: number; no?: number } }
-          | null;
+        const rawResponseText = await response.text();
+        type EventRsvpCallbackResponse = {
+          ok?: boolean;
+          counts?: { yes?: number; maybe?: number; no?: number };
+          error?: string;
+          message?: string;
+        };
+
+        let json: EventRsvpCallbackResponse | null = null;
+        try {
+          json = rawResponseText ? (JSON.parse(rawResponseText) as EventRsvpCallbackResponse) : null;
+        } catch {
+          json = null;
+        }
 
         if (!response.ok || !json?.ok) {
-          throw new Error(`RSVP callback failed${response.ok ? "" : `: ${response.status}`}`);
+          const detail =
+            json?.error ||
+            json?.message ||
+            rawResponseText.trim().slice(0, 300) ||
+            `status ${response.status}`;
+          throw new Error(`RSVP callback failed: ${detail}`);
         }
 
         await postSlackResponse(responseUrl, {

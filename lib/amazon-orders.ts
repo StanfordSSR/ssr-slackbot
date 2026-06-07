@@ -8,6 +8,7 @@ import {
   getActiveAmazonAccountLink,
   getActiveTeams,
   getAmazonOrderIngestionByMessage,
+  getPendingAmazonOrderIngestionsWithMessages,
   markAmazonOrderIngestionFailed,
   markAmazonOrderIngestionPosted,
   markAmazonScanCompleted,
@@ -16,7 +17,7 @@ import {
 } from "@/lib/supabase";
 import { fetchGmailMessage, getMessageBodyText, getMessageMetadata, markGmailMessageRead, searchGmailMessageIds } from "@/lib/gmail";
 import { amazonClaimBlocks } from "@/lib/slack-blocks";
-import { postMessage } from "@/lib/slack";
+import { postMessage, updateMessage } from "@/lib/slack";
 
 export async function buildAmazonOAuthLink(params: {
   slackUserId: string;
@@ -105,6 +106,36 @@ export async function syncActiveAmazonAccountForDays(days: number) {
     return { linkId: null, unreadCount: 0, posted: 0 };
   }
   return syncAmazonAccountLinkForDays(link, days);
+}
+
+export async function refreshPendingAmazonClaimMessages() {
+  const ingestions = await getPendingAmazonOrderIngestionsWithMessages();
+  const teams = await getActiveTeams();
+  let updated = 0;
+
+  for (const ingestion of ingestions) {
+    if (!ingestion.slack_channel_id || !ingestion.slack_message_ts) continue;
+
+    await updateMessage(
+      ingestion.slack_channel_id,
+      ingestion.slack_message_ts,
+      `Amazon purchase: ${(ingestion.item_name || "Amazon order").replace(/\s+/g, " ").trim().slice(0, 120)} - ${formatAmount(ingestion.amount_total || 0, ingestion.currency)}`,
+      amazonClaimBlocks({
+        ingestionId: ingestion.id,
+        itemName: ingestion.item_name || "Amazon order",
+        amountTotal: ingestion.amount_total || 0,
+        currency: ingestion.currency,
+        purchaseDate: ingestion.purchase_date,
+        teams,
+      }),
+    );
+    updated += 1;
+  }
+
+  return {
+    updated,
+    totalPending: ingestions.length,
+  };
 }
 
 async function ingestAmazonOrderMessage(params: { link: AmazonAccountLink; accessToken: string; messageId: string }) {

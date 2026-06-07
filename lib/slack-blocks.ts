@@ -194,6 +194,17 @@ export function amazonClaimBlocks(params: {
         { type: "mrkdwn", text: `*Date*\n${params.purchaseDate || "Unknown"}` },
       ],
     },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Leadership / Operations" },
+          action_id: "claim_amazon_order_leadership",
+          value: encodeAmazonClaimValue(params.ingestionId, "leadership"),
+        },
+      ],
+    },
     ...teamRows.map((teams) => ({
       type: "actions",
       elements: teams.map((team) => ({
