@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/reimbursements/sync",
-      "schedule": "* * * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
