@@ -333,6 +333,18 @@ export async function downloadSlackFile(url: string) {
 }
 
 export async function getSlackUserIdentity(userId: string): Promise<SlackUserIdentity> {
+  const identity = await getSlackUserIdentityMaybeEmail(userId);
+  if (!identity.email) {
+    throw new Error("Slack did not return an email for this user. Check users:read and users:read.email scopes.");
+  }
+
+  return {
+    ...identity,
+    email: identity.email,
+  };
+}
+
+export async function getSlackUserIdentityMaybeEmail(userId: string): Promise<Omit<SlackUserIdentity, "email"> & { email: string | null }> {
   const result = await slackFetch<{
     ok: true;
     user: SlackDirectoryUser & {
@@ -340,14 +352,9 @@ export async function getSlackUserIdentity(userId: string): Promise<SlackUserIde
     };
   }>(`/users.info?user=${encodeURIComponent(userId)}`);
 
-  const email = result.user.profile?.email?.trim().toLowerCase();
-  if (!email) {
-    throw new Error("Slack did not return an email for this user. Check users:read and users:read.email scopes.");
-  }
-
   return {
     slackUserId: result.user.id,
-    email,
+    email: result.user.profile?.email?.trim().toLowerCase() || null,
     displayName: result.user.profile?.display_name || result.user.name || null,
     realName: result.user.profile?.real_name || result.user.real_name || null,
     username: result.user.name || null,

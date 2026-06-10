@@ -365,6 +365,146 @@ export function eventAnnouncementDecisionBlocks(params: {
   ];
 }
 
+export function reimbursementApprovalBlocks(params: {
+  title: string;
+  message: string;
+  teamName: string | null;
+  reimbursementId: string;
+  requiresSignature: boolean;
+  ctaLabel: string | null;
+  approveUrl: string | null;
+}) {
+  const blocks: unknown[] = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${params.title}*`,
+      },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: [
+            params.teamName ? `Team: ${params.teamName}` : null,
+            params.requiresSignature ? "Signature required" : "Slack approval available",
+          ]
+            .filter(Boolean)
+            .join(" • "),
+        },
+      ],
+    },
+    {
+      type: "divider",
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: params.message,
+      },
+    },
+  ];
+
+  if (params.requiresSignature) {
+    if (params.approveUrl) {
+      blocks.push({
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: (params.ctaLabel || "Review & sign").slice(0, 75) },
+            url: params.approveUrl,
+            action_id: "open_reimbursement_signature",
+          },
+        ],
+      });
+    }
+    return blocks;
+  }
+
+  const elements: unknown[] = [
+    {
+      type: "button",
+      text: { type: "plain_text", text: "Approve" },
+      style: "primary",
+      action_id: "reimb_approve",
+      value: `${params.reimbursementId}:approved`,
+    },
+    {
+      type: "button",
+      text: { type: "plain_text", text: "Reject" },
+      style: "danger",
+      action_id: "reimb_reject",
+      value: `${params.reimbursementId}:rejected`,
+    },
+  ];
+
+  if (params.approveUrl) {
+    elements.push({
+      type: "button",
+      text: { type: "plain_text", text: (params.ctaLabel || "Review reimbursement").slice(0, 75) },
+      url: params.approveUrl,
+      action_id: "open_reimbursement_review",
+    });
+  }
+
+  blocks.push({
+    type: "actions",
+    elements,
+  });
+
+  return blocks;
+}
+
+export function reimbursementDecisionBlocks(params: {
+  title: string | null;
+  message: string | null;
+  teamName: string | null;
+  status: "approved" | "rejected";
+  decidedByName: string | null;
+  approvalKind?: "button" | "signature" | null;
+}) {
+  const approved = params.status === "approved";
+  const statusLabel = approved ? "Approved" : "Rejected";
+  const symbol = approved ? "✅" : "❌";
+  const signedSuffix = params.approvalKind === "signature" && approved ? " (signed)" : "";
+  const actor = params.decidedByName?.trim() || "a lead";
+  const title = params.title?.trim() || "Reimbursement review";
+
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${title}*\n${symbol} ${statusLabel} by ${actor}${signedSuffix}`,
+      },
+    },
+    ...(params.message?.trim()
+      ? [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: params.message,
+            },
+          },
+        ]
+      : []),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: [params.teamName ? `Team: ${params.teamName}` : null, "Reimbursement settled"].filter(Boolean).join(" • "),
+        },
+      ],
+    },
+  ];
+}
+
 function buildEventRsvpButton(
   label: "Yes" | "Maybe" | "No",
   style: "primary" | "danger" | undefined,

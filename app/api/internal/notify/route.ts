@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
-import { getEnv } from "@/lib/env";
 import {
   completeInternalNotificationRequest,
   createInternalNotificationRequest,
   getInternalNotificationRequestByKey,
   getProfileSlackMappingsByEmails,
+  recordReimbursementMessage,
   updateProfileSlackUserId,
+  upsertReimbursementPush,
 } from "@/lib/supabase";
-import { eventAnnouncementBlocks } from "@/lib/slack-blocks";
+import { eventAnnouncementBlocks, reimbursementApprovalBlocks } from "@/lib/slack-blocks";
 import { lookupSlackUserIdByEmail, postDirectMessageToUser } from "@/lib/slack";
+import { isValidNotifyBearer } from "@/lib/reimbursements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +42,17 @@ type EventAnnouncementMetadata = {
   eventAt: string | null;
   recipientEmail: string | null;
   rsvpCallbackUrl: string | null;
+};
+
+type ReimbursementApprovalMetadata = {
+  reimbursementId: string;
+  teamId: string;
+  teamName: string;
+  amountCents: number | null;
+  reimbursementNumber: string | null;
+  requiresSignature: boolean;
+  approveUrl: string;
+  callbackPath: string | null;
 };
 
 function unauthorized() {
@@ -120,6 +133,32 @@ function getEventAnnouncementMetadata(metadata: Record<string, unknown> | undefi
   } satisfies EventAnnouncementMetadata;
 }
 
+function getReimbursementApprovalMetadata(metadata: Record<string, unknown> | undefined) {
+  if (!metadata) {
+    return null;
+  }
+
+  const reimbursementId = typeof metadata.reimbursement_id === "string" ? metadata.reimbursement_id.trim() : "";
+  const teamId = typeof metadata.team_id === "string" ? metadata.team_id.trim() : "";
+  const teamName = typeof metadata.team_name === "string" ? metadata.team_name.trim() : "";
+  const approveUrl = typeof metadata.approve_url === "string" ? metadata.approve_url.trim() : "";
+
+  if (!reimbursementId || !teamId || !teamName || !approveUrl) {
+    return null;
+  }
+
+  return {
+    reimbursementId,
+    teamId,
+    teamName,
+    amountCents: typeof metadata.amount_cents === "number" ? metadata.amount_cents : null,
+    reimbursementNumber: typeof metadata.reimbursement_number === "string" ? metadata.reimbursement_number : null,
+    requiresSignature: metadata.requires_signature === true,
+    approveUrl,
+    callbackPath: typeof metadata.callback_path === "string" ? metadata.callback_path : null,
+  } satisfies ReimbursementApprovalMetadata;
+}
+
 function splitEventDetails(message: string, location: string | null) {
   const trimmed = message.trim();
   if (!trimmed) return "";
@@ -171,9 +210,8 @@ async function resolveSlackUserId(
 }
 
 export async function POST(request: Request) {
-  const sharedSecret = getEnv("INTERNAL_NOTIFY_SHARED_SECRET");
   const authHeader = request.headers.get("authorization");
-  if (!sharedSecret || authHeader !== `Bearer ${sharedSecret}`) {
+  if (!isValidNotifyBearer(authHeader)) {
     return unauthorized();
   }
 
@@ -186,11 +224,15 @@ export async function POST(request: Request) {
 
   const recipientEmails = normalizeEmails(Array.isArray(body.recipient_emails) ? body.recipient_emails : []);
   const eventMetadata = getEventAnnouncementMetadata(body.metadata);
+  const reimbursementMetadata = body.type === "reimbursement_approval" ? getReimbursementApprovalMetadata(body.metadata) : null;
   if (!body.idempotency_key?.trim()) return badRequest("idempotency_key is required");
   if (!body.type?.trim()) return badRequest("type is required");
   if (!body.title?.trim()) return badRequest("title is required");
   if (!body.message?.trim()) return badRequest("message is required");
   if (recipientEmails.length === 0) return badRequest("recipient_emails must include at least one email");
+  if (body.type === "reimbursement_approval" && !reimbursementMetadata) {
+    return badRequest("reimbursement_approval metadata is required");
+  }
   if (!eventMetadata && ((body.cta_label && !body.cta_url) || (!body.cta_label && body.cta_url))) {
     return badRequest("cta_label and cta_url must be provided together");
   }
@@ -250,6 +292,19 @@ export async function POST(request: Request) {
   const mappedByEmail = new Map(
     mappedUsers.map((entry) => [entry.email, { slackUserId: entry.slackUserId, profileId: entry.profileId }]),
   );
+
+  if (reimbursementMetadata) {
+    await upsertReimbursementPush({
+      reimbursementId: reimbursementMetadata.reimbursementId,
+      teamId: reimbursementMetadata.teamId,
+      teamName: reimbursementMetadata.teamName,
+      requiresSignature: reimbursementMetadata.requiresSignature,
+      title: body.title,
+      message: body.message,
+      ctaUrl: body.cta_url ?? reimbursementMetadata.approveUrl,
+    });
+  }
+
   const results: NotifyResult[] = [];
   let delivered = 0;
   let failed = 0;
@@ -258,7 +313,17 @@ export async function POST(request: Request) {
     try {
       const slackUserId = await resolveSlackUserId(email, mappedByEmail);
       const blocks =
-        eventMetadata?.announcementId && eventMetadata.rsvpCallbackUrl
+        reimbursementMetadata
+          ? reimbursementApprovalBlocks({
+              title: body.title,
+              message: body.message,
+              teamName: reimbursementMetadata.teamName,
+              reimbursementId: reimbursementMetadata.reimbursementId,
+              requiresSignature: reimbursementMetadata.requiresSignature,
+              ctaLabel: body.cta_label ?? null,
+              approveUrl: body.cta_url ?? reimbursementMetadata.approveUrl,
+            })
+          : eventMetadata?.announcementId && eventMetadata.rsvpCallbackUrl
           ? eventAnnouncementBlocks({
               title: body.title,
               eventAt: eventMetadata.eventAt ?? null,
@@ -267,11 +332,19 @@ export async function POST(request: Request) {
               recipientEmail: eventMetadata.recipientEmail || email,
               announcementId: eventMetadata.announcementId,
               callbackUrl: eventMetadata.rsvpCallbackUrl,
-            })
+          })
           : buildBlocks({ ...body, recipient_emails: recipientEmails });
       const text = buildText({ ...body, recipient_emails: recipientEmails });
 
-      await postDirectMessageToUser(slackUserId, text, blocks);
+      const posted = await postDirectMessageToUser(slackUserId, text, blocks);
+      if (reimbursementMetadata) {
+        await recordReimbursementMessage({
+          reimbursementId: reimbursementMetadata.reimbursementId,
+          channelId: posted.channel,
+          messageTs: posted.ts,
+          recipientEmail: email,
+        });
+      }
       results.push({ email, ok: true, slack_user_id: slackUserId });
       delivered += 1;
     } catch (error) {

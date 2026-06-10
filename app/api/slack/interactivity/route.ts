@@ -6,6 +6,13 @@ import { buildSlackOAuthLink } from "@/lib/gmail-receipts";
 import { recordAuditEvent } from "@/lib/audit";
 import { decodeActionValue, decodeAmazonClaimValue, decodeAttachmentSelectValue, decodeEventRsvpValue, isGmailPendingReceiptPayload } from "@/lib/receipt-utils";
 import { amazonClaimDecisionBlocks, eventAnnouncementDecisionBlocks, receiptDecisionBlocks, receiptReviewBlocks } from "@/lib/slack-blocks";
+import {
+  decodeReimbursementDecisionValue,
+  fetchReimbursementStatuses,
+  getNotifySharedSecret,
+  submitReimbursementDecision,
+  syncReimbursementMessages,
+} from "@/lib/reimbursements";
 import { getSupportedEmailAttachments, rebuildEmailIngestionAttachment } from "@/lib/gmail-receipts";
 import {
   attachAmazonPurchaseLog,
@@ -32,6 +39,7 @@ import {
   downloadSlackFile,
   fetchFileInfo,
   getSlackUserIdentity,
+  getSlackUserIdentityMaybeEmail,
   postSlackResponse,
   postDirectMessageToUser,
   postDm,
@@ -127,6 +135,90 @@ export async function POST(request: Request) {
         title: "Receipt Review",
         detail: "Canceled",
       }),
+    });
+  }
+
+  if (action.action_id === "reimb_approve" || action.action_id === "reimb_reject") {
+    const responseUrl = payload.response_url;
+    if (!responseUrl) {
+      return NextResponse.json({ text: "Slack did not include a response URL for this reimbursement decision.", replace_original: false });
+    }
+
+    let decoded: ReturnType<typeof decodeReimbursementDecisionValue>;
+    try {
+      decoded = decodeReimbursementDecisionValue(actionValue);
+    } catch {
+      return NextResponse.json({ text: "That reimbursement decision payload was invalid.", replace_original: false });
+    }
+
+    after(async () => {
+      try {
+        const identity = await getSlackUserIdentityMaybeEmail(payload.user.id);
+        const actorName = identity.realName || identity.displayName || identity.username || null;
+        const hqResponse = await submitReimbursementDecision({
+          reimbursementId: decoded.reimbursementId,
+          decision: decoded.decision,
+          approverEmail: identity.email,
+          approverSlackUserId: payload.user.id,
+        });
+
+        if (hqResponse.httpStatus === 200 && hqResponse.body?.ok && hqResponse.body.status) {
+          const [statusFromHq] = await fetchReimbursementStatuses([decoded.reimbursementId]).catch(() => []);
+          const decidedByName =
+            statusFromHq?.decided_by_name ||
+            hqResponse.body.decided_by_name ||
+            (hqResponse.body.note ? null : actorName);
+          const approvalKind = statusFromHq?.approval_kind || hqResponse.body.approval_kind || "button";
+          const synced = await syncReimbursementMessages({
+            reimbursementId: decoded.reimbursementId,
+            status: hqResponse.body.status,
+            decidedByName,
+            approvalKind,
+          });
+          const statusLabel = hqResponse.body.status === "approved" ? "Approved" : "Rejected";
+          const syncNote = synced.failed > 0 ? ` ${synced.failed} Slack message update(s) will retry from the poller.` : "";
+
+          await postSlackResponse(responseUrl, {
+            text: `${hqResponse.body.note || statusLabel}.${syncNote}`,
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
+
+        if (hqResponse.httpStatus === 422) {
+          const approveUrl = hqResponse.body?.approve_url;
+          await postSlackResponse(responseUrl, {
+            text: approveUrl
+              ? `This one needs a signature: <${approveUrl}|review and sign it in HQ>.`
+              : "This one needs a signature. Open the HQ review link to sign it.",
+            replace_original: false,
+            response_type: "ephemeral",
+          });
+          return;
+        }
+
+        const errorText =
+          hqResponse.body?.error ||
+          hqResponse.rawBody.trim().slice(0, 300) ||
+          `HQ returned ${hqResponse.httpStatus}`;
+        await postSlackResponse(responseUrl, {
+          text: errorText,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      } catch (error) {
+        await postSlackResponse(responseUrl, {
+          text: `Reimbursement decision failed: ${describeError(error)}`,
+          replace_original: false,
+          response_type: "ephemeral",
+        });
+      }
+    });
+
+    return NextResponse.json({
+      text: "Sending reimbursement decision...",
+      replace_original: false,
     });
   }
 
@@ -488,9 +580,9 @@ Amount: ${decoded.extraction.amount_total ?? "unknown"}`,
 
     after(async () => {
       try {
-        const sharedSecret = getEnv("INTERNAL_NOTIFY_SHARED_SECRET");
+        const sharedSecret = getNotifySharedSecret();
         if (!sharedSecret) {
-          throw new Error("Missing INTERNAL_NOTIFY_SHARED_SECRET.");
+          throw new Error("Missing SSR_SLACKBOT_NOTIFY_SECRET or INTERNAL_NOTIFY_SHARED_SECRET.");
         }
 
         const callbackPayload = {

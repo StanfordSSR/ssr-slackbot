@@ -98,11 +98,13 @@ Copy `.env.example` into `.env.local` for local testing or set the same values i
 - `GOOGLE_REDIRECT_URI`
 - `GMAIL_TOKEN_ENCRYPTION_KEY`
 - `GMAIL_CRON_SECRET`
+- `SSR_SLACKBOT_NOTIFY_SECRET` or `INTERNAL_NOTIFY_SHARED_SECRET`
 
 ### Optional
 - `OPENAI_CHAT_MODEL` default: `gpt-5.1`
 - `OPENAI_RECEIPT_MODEL` default: `gpt-4.1-mini`
 - `GOOGLE_OAUTH_SCOPES` default: Gmail read/modify + user email
+- `HQ_BASE_URL` default: `https://hq.stanfordssr.org`
 - `SUPABASE_RECEIPT_PATH_PREFIX` default: `slack-bot`
 
 ### Required for production receipt uploads
@@ -135,4 +137,6 @@ Expose the app with a public tunnel during local Slack testing.
 - `SUPABASE_RECEIPT_BUCKET` should be set in production so confirmed receipts are uploaded before the purchase log is created.
 - Gmail-linked inboxes are team-specific in v1.
 - Gmail messages are marked read after approval DMs are successfully sent.
+- Public reimbursement approvals from HQ are sent to `/api/internal/notify` as `type: "reimbursement_approval"`.
+- `/api/reimbursements/sync` polls HQ for pending reimbursement decisions so signature-link and in-portal approvals update Slack DMs.
 - All Supabase access uses the service role key and must stay server-side only.

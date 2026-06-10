@@ -104,6 +104,27 @@ export type InternalNotificationRequest = {
   completed_at: string | null;
 };
 
+export type ReimbursementPush = {
+  reimbursement_id: string;
+  team_id: string;
+  team_name: string | null;
+  requires_signature: boolean;
+  status: "pending" | "approved" | "rejected";
+  title: string | null;
+  message: string | null;
+  cta_url: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReimbursementMessage = {
+  reimbursement_id: string;
+  channel_id: string;
+  message_ts: string;
+  recipient_email: string;
+  created_at: string;
+};
+
 export async function findProfileByEmail(email: string) {
   const { data, error } = await supabase
     .from("profiles")
@@ -261,6 +282,117 @@ export async function completeInternalNotificationRequest(params: {
       completed_at: new Date().toISOString(),
     })
     .eq("idempotency_key", params.idempotencyKey);
+
+  if (error) throw error;
+}
+
+const reimbursementPushColumns =
+  "reimbursement_id, team_id, team_name, requires_signature, status, title, message, cta_url, created_at, updated_at";
+
+export async function upsertReimbursementPush(params: {
+  reimbursementId: string;
+  teamId: string;
+  teamName: string | null;
+  requiresSignature: boolean;
+  title: string;
+  message: string;
+  ctaUrl: string | null;
+}) {
+  const { data, error } = await supabase
+    .from("reimbursement_pushes")
+    .upsert(
+      {
+        reimbursement_id: params.reimbursementId,
+        team_id: params.teamId,
+        team_name: params.teamName,
+        requires_signature: params.requiresSignature,
+        title: params.title,
+        message: params.message,
+        cta_url: params.ctaUrl,
+      },
+      { onConflict: "reimbursement_id" },
+    )
+    .select(reimbursementPushColumns)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as ReimbursementPush | null;
+}
+
+export async function getReimbursementPushById(reimbursementId: string) {
+  const { data, error } = await supabase
+    .from("reimbursement_pushes")
+    .select(reimbursementPushColumns)
+    .eq("reimbursement_id", reimbursementId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as ReimbursementPush | null;
+}
+
+export async function getReimbursementPushesByIds(reimbursementIds: string[]) {
+  if (reimbursementIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("reimbursement_pushes")
+    .select(reimbursementPushColumns)
+    .in("reimbursement_id", reimbursementIds);
+
+  if (error) throw error;
+  return (data ?? []) as ReimbursementPush[];
+}
+
+export async function recordReimbursementMessage(params: {
+  reimbursementId: string;
+  channelId: string;
+  messageTs: string;
+  recipientEmail: string;
+}) {
+  const { error } = await supabase.from("reimbursement_messages").upsert(
+    {
+      reimbursement_id: params.reimbursementId,
+      channel_id: params.channelId,
+      message_ts: params.messageTs,
+      recipient_email: params.recipientEmail,
+    },
+    { onConflict: "reimbursement_id,message_ts" },
+  );
+
+  if (error) throw error;
+}
+
+export async function getReimbursementMessagesById(reimbursementId: string) {
+  const { data, error } = await supabase
+    .from("reimbursement_messages")
+    .select("reimbursement_id, channel_id, message_ts, recipient_email, created_at")
+    .eq("reimbursement_id", reimbursementId)
+    .order("created_at");
+
+  if (error) throw error;
+  return (data ?? []) as ReimbursementMessage[];
+}
+
+export async function getPendingReimbursementPushIds(params: { createdAfter: string; limit: number }) {
+  const { data, error } = await supabase
+    .from("reimbursement_pushes")
+    .select("reimbursement_id")
+    .eq("status", "pending")
+    .gte("created_at", params.createdAfter)
+    .order("created_at")
+    .limit(params.limit);
+
+  if (error) throw error;
+  return (data ?? []).map((row) => row.reimbursement_id as string).filter(Boolean);
+}
+
+export async function updateReimbursementPushStatus(params: {
+  reimbursementId: string;
+  status: "approved" | "rejected";
+}) {
+  const { error } = await supabase
+    .from("reimbursement_pushes")
+    .update({ status: params.status })
+    .eq("reimbursement_id", params.reimbursementId);
 
   if (error) throw error;
 }
