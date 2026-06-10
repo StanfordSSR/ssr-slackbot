@@ -431,25 +431,16 @@ export function reimbursementApprovalBlocks(params: {
       text: { type: "plain_text", text: "Approve" },
       style: "primary",
       action_id: "reimb_approve",
-      value: `${params.reimbursementId}:approved`,
+      value: params.reimbursementId,
     },
     {
       type: "button",
       text: { type: "plain_text", text: "Reject" },
       style: "danger",
       action_id: "reimb_reject",
-      value: `${params.reimbursementId}:rejected`,
+      value: params.reimbursementId,
     },
   ];
-
-  if (params.approveUrl) {
-    elements.push({
-      type: "button",
-      text: { type: "plain_text", text: (params.ctaLabel || "Review reimbursement").slice(0, 75) },
-      url: params.approveUrl,
-      action_id: "open_reimbursement_review",
-    });
-  }
 
   blocks.push({
     type: "actions",

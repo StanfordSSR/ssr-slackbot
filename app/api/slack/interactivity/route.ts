@@ -150,6 +150,7 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json({ text: "That reimbursement decision payload was invalid.", replace_original: false });
     }
+    const decision = decoded.decision ?? (action.action_id === "reimb_approve" ? "approved" : "rejected");
 
     after(async () => {
       try {
@@ -157,7 +158,7 @@ export async function POST(request: Request) {
         const actorName = identity.realName || identity.displayName || identity.username || null;
         const hqResponse = await submitReimbursementDecision({
           reimbursementId: decoded.reimbursementId,
-          decision: decoded.decision,
+          decision,
           approverEmail: identity.email,
           approverSlackUserId: payload.user.id,
         });

@@ -10,7 +10,7 @@ import {
 } from "@/lib/supabase";
 import { eventAnnouncementBlocks, reimbursementApprovalBlocks } from "@/lib/slack-blocks";
 import { lookupSlackUserIdByEmail, postDirectMessageToUser } from "@/lib/slack";
-import { isValidNotifyBearer } from "@/lib/reimbursements";
+import { isValidNotifyBearer, syncReimbursementMessages } from "@/lib/reimbursements";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +53,14 @@ type ReimbursementApprovalMetadata = {
   requiresSignature: boolean;
   approveUrl: string;
   callbackPath: string | null;
+};
+
+type ReimbursementDecidedMetadata = {
+  reimbursementId: string;
+  teamId: string | null;
+  decision: "approved" | "rejected";
+  decidedByName: string | null;
+  approvalKind: "button" | "signature" | null;
 };
 
 function unauthorized() {
@@ -159,6 +167,28 @@ function getReimbursementApprovalMetadata(metadata: Record<string, unknown> | un
   } satisfies ReimbursementApprovalMetadata;
 }
 
+function getReimbursementDecidedMetadata(metadata: Record<string, unknown> | undefined) {
+  if (!metadata) {
+    return null;
+  }
+
+  const reimbursementId = typeof metadata.reimbursement_id === "string" ? metadata.reimbursement_id.trim() : "";
+  const decision = typeof metadata.decision === "string" ? metadata.decision.trim() : "";
+  const approvalKind = typeof metadata.approval_kind === "string" ? metadata.approval_kind.trim() : null;
+
+  if (!reimbursementId || (decision !== "approved" && decision !== "rejected")) {
+    return null;
+  }
+
+  return {
+    reimbursementId,
+    teamId: typeof metadata.team_id === "string" ? metadata.team_id.trim() || null : null,
+    decision,
+    decidedByName: typeof metadata.decided_by_name === "string" ? metadata.decided_by_name : null,
+    approvalKind: approvalKind === "button" || approvalKind === "signature" ? approvalKind : null,
+  } satisfies ReimbursementDecidedMetadata;
+}
+
 function splitEventDetails(message: string, location: string | null) {
   const trimmed = message.trim();
   if (!trimmed) return "";
@@ -225,6 +255,8 @@ export async function POST(request: Request) {
   const recipientEmails = normalizeEmails(Array.isArray(body.recipient_emails) ? body.recipient_emails : []);
   const eventMetadata = getEventAnnouncementMetadata(body.metadata);
   const reimbursementMetadata = body.type === "reimbursement_approval" ? getReimbursementApprovalMetadata(body.metadata) : null;
+  const reimbursementDecidedMetadata =
+    body.type === "reimbursement_decided" ? getReimbursementDecidedMetadata(body.metadata) : null;
   if (!body.idempotency_key?.trim()) return badRequest("idempotency_key is required");
   if (!body.type?.trim()) return badRequest("type is required");
   if (!body.title?.trim()) return badRequest("title is required");
@@ -232,6 +264,9 @@ export async function POST(request: Request) {
   if (recipientEmails.length === 0) return badRequest("recipient_emails must include at least one email");
   if (body.type === "reimbursement_approval" && !reimbursementMetadata) {
     return badRequest("reimbursement_approval metadata is required");
+  }
+  if (body.type === "reimbursement_decided" && !reimbursementDecidedMetadata) {
+    return badRequest("reimbursement_decided metadata is required");
   }
   if (!eventMetadata && ((body.cta_label && !body.cta_url) || (!body.cta_label && body.cta_url))) {
     return badRequest("cta_label and cta_url must be provided together");
@@ -288,6 +323,38 @@ export async function POST(request: Request) {
     );
   }
 
+  if (reimbursementDecidedMetadata) {
+    const synced = await syncReimbursementMessages({
+      reimbursementId: reimbursementDecidedMetadata.reimbursementId,
+      status: reimbursementDecidedMetadata.decision,
+      decidedByName: reimbursementDecidedMetadata.decidedByName,
+      approvalKind: reimbursementDecidedMetadata.approvalKind,
+    });
+    const responsePayload = {
+      ok: synced.failed === 0,
+      delivered: synced.updated,
+      failed: synced.failed,
+      results: [] as NotifyResult[],
+      idempotency_key: body.idempotency_key,
+      type: body.type,
+      team_id: body.team_id ?? reimbursementDecidedMetadata.teamId,
+      team_name: body.team_name ?? null,
+      notification_request_id: created.id,
+      reimbursement_id: reimbursementDecidedMetadata.reimbursementId,
+      reimbursement_sync: synced,
+    };
+
+    await completeInternalNotificationRequest({
+      idempotencyKey: body.idempotency_key,
+      status: synced.failed === 0 ? "completed" : "failed",
+      deliveredCount: synced.updated,
+      failedCount: synced.failed,
+      responsePayload,
+    });
+
+    return NextResponse.json(responsePayload);
+  }
+
   const mappedUsers = await getProfileSlackMappingsByEmails(recipientEmails);
   const mappedByEmail = new Map(
     mappedUsers.map((entry) => [entry.email, { slackUserId: entry.slackUserId, profileId: entry.profileId }]),
@@ -301,7 +368,7 @@ export async function POST(request: Request) {
       requiresSignature: reimbursementMetadata.requiresSignature,
       title: body.title,
       message: body.message,
-      ctaUrl: body.cta_url ?? reimbursementMetadata.approveUrl,
+      ctaUrl: reimbursementMetadata.requiresSignature ? body.cta_url ?? reimbursementMetadata.approveUrl : null,
     });
   }
 
@@ -321,7 +388,7 @@ export async function POST(request: Request) {
               reimbursementId: reimbursementMetadata.reimbursementId,
               requiresSignature: reimbursementMetadata.requiresSignature,
               ctaLabel: body.cta_label ?? null,
-              approveUrl: body.cta_url ?? reimbursementMetadata.approveUrl,
+              approveUrl: reimbursementMetadata.requiresSignature ? body.cta_url ?? reimbursementMetadata.approveUrl : null,
             })
           : eventMetadata?.announcementId && eventMetadata.rsvpCallbackUrl
           ? eventAnnouncementBlocks({

@@ -50,6 +50,14 @@ export function getHqBaseUrl() {
 
 export function decodeReimbursementDecisionValue(value: string) {
   const separatorIndex = value.lastIndexOf(":");
+  if (separatorIndex < 0) {
+    const reimbursementId = value.trim();
+    if (!reimbursementId) {
+      throw new Error("Invalid reimbursement decision value.");
+    }
+    return { reimbursementId, decision: null };
+  }
+
   if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
     throw new Error("Invalid reimbursement decision value.");
   }
