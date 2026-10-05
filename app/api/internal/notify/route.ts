@@ -4,6 +4,7 @@ import {
   createInternalNotificationRequest,
   getInternalNotificationRequestByKey,
   getProfileSlackMappingsByEmails,
+  getReimbursementMessagesById,
   recordReimbursementMessage,
   updateProfileSlackUserId,
   upsertReimbursementPush,
@@ -32,6 +33,7 @@ type NotifyResult = {
   email: string;
   ok: boolean;
   slack_user_id?: string;
+  already_delivered?: boolean;
   error?: string;
 };
 
@@ -239,6 +241,29 @@ async function resolveSlackUserId(
   return slackUserId;
 }
 
+export async function GET(request: Request) {
+  if (!isValidNotifyBearer(request.headers.get("authorization"))) {
+    return unauthorized();
+  }
+
+  const key = new URL(request.url).searchParams.get("idempotency_key")?.trim() || "";
+  if (!key || key.length > 200 || !key.startsWith("reimbursement_approval:")) {
+    return badRequest("invalid reimbursement notification key");
+  }
+
+  const notification = await getInternalNotificationRequestByKey(key);
+  if (!notification) {
+    return NextResponse.json({ ok: true, found: false });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    found: true,
+    status: notification.status,
+    response_payload: notification.response_payload,
+  });
+}
+
 export async function POST(request: Request) {
   const authHeader = request.headers.get("authorization");
   if (!isValidNotifyBearer(authHeader)) {
@@ -372,11 +397,20 @@ export async function POST(request: Request) {
     });
   }
 
+  const deliveredEmails = reimbursementMetadata
+    ? new Set((await getReimbursementMessagesById(reimbursementMetadata.reimbursementId)).map((message) => message.recipient_email.toLowerCase()))
+    : new Set<string>();
+
   const results: NotifyResult[] = [];
   let delivered = 0;
   let failed = 0;
 
   for (const email of recipientEmails) {
+    if (reimbursementMetadata && deliveredEmails.has(email)) {
+      results.push({ email, ok: true, already_delivered: true });
+      delivered += 1;
+      continue;
+    }
     try {
       const slackUserId = await resolveSlackUserId(email, mappedByEmail);
       const blocks =
@@ -411,6 +445,7 @@ export async function POST(request: Request) {
           messageTs: posted.ts,
           recipientEmail: email,
         });
+        deliveredEmails.add(email);
       }
       results.push({ email, ok: true, slack_user_id: slackUserId });
       delivered += 1;
